@@ -1,8 +1,8 @@
 import { geoOrthographic, geoPath } from 'd3-geo';
 
-// LAND_GEOJSON, BORDER_GEOJSON, US_STATE_BORDER_GEOJSON, and THEME are injected as globals by the
-// HTML wrapper at build time.
-/* global LAND_GEOJSON, BORDER_GEOJSON, US_STATE_BORDER_GEOJSON, THEME */
+// LAND_GEOJSON, BORDER_GEOJSON, REGION_BORDER_GEOJSON, CITIES, and THEME are injected as globals
+// by the HTML wrapper at build time.
+/* global LAND_GEOJSON, BORDER_GEOJSON, REGION_BORDER_GEOJSON, CITIES, THEME */
 
 const canvas = document.getElementById('globe');
 const ctx = canvas.getContext('2d');
@@ -17,7 +17,16 @@ let dpr = Math.max(1, window.devicePixelRatio || 1);
 let rotation = [10, -12]; // [lambda, phi], degrees
 let zoom = 1;
 const MIN_ZOOM = 1;
-const MAX_ZOOM = 4.5;
+const MAX_ZOOM = 14;
+// Region borders ramp in smoothly across this zoom range, rather than snapping on at a single
+// threshold — same idea as Apple Maps/Flighty showing more map detail the deeper you zoom in.
+const REGION_BORDER_FADE_START = 1.4;
+const REGION_BORDER_FADE_END = 2.2;
+// Each city's own reveal zoom is CITY_BASE_MIN_ZOOM + scalerank * CITY_ZOOM_PER_RANK (scalerank 0
+// = major world city), fading in over CITY_FADE_RANGE zoom units once reached.
+const CITY_BASE_MIN_ZOOM = 2.6;
+const CITY_ZOOM_PER_RANK = 1.0;
+const CITY_FADE_RANGE = 0.6;
 let baseScale = 100;
 
 let astroLines = []; // [{ bodyId, kind, color, feature }]
@@ -129,13 +138,23 @@ function renderInner() {
   ctx.strokeStyle = THEME.landStroke;
   ctx.stroke();
 
-  // US state borders (drawn under country borders, since state lines end at the coast/border
-  // and the country outline should read as the more prominent line).
-  ctx.beginPath();
-  path(US_STATE_BORDER_GEOJSON);
-  ctx.lineWidth = 0.4;
-  ctx.strokeStyle = THEME.usStateBorder;
-  ctx.stroke();
+  // State/province borders for every country, drawn under country borders (so the country
+  // outline reads as the more prominent line) and only faded in once zoomed in a bit — at full
+  // zoom-out, this level of detail is just noise, the same reasoning as the line labels.
+  const regionBorderAlpha = clamp(
+    (zoom - REGION_BORDER_FADE_START) / (REGION_BORDER_FADE_END - REGION_BORDER_FADE_START),
+    0,
+    1
+  );
+  if (regionBorderAlpha > 0) {
+    ctx.beginPath();
+    path(REGION_BORDER_GEOJSON);
+    ctx.lineWidth = 0.4;
+    ctx.strokeStyle = THEME.regionBorder;
+    ctx.globalAlpha = regionBorderAlpha;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
 
   // Country borders.
   ctx.beginPath();
@@ -143,6 +162,36 @@ function renderInner() {
   ctx.lineWidth = 0.5;
   ctx.strokeStyle = THEME.countryBorder;
   ctx.stroke();
+
+  // City labels — deepest level of map detail, so they only start appearing well into the region
+  // border's own fade range and get progressively denser the further in you go. Each city's
+  // reveal zoom is driven by Natural Earth's own SCALERANK (0 = major world cities, higher =
+  // smaller places), so major cities show first and smaller ones fill in on top as you zoom
+  // further — same idea as Apple Maps/Flighty revealing more place names the deeper you zoom.
+  if (zoom > CITY_BASE_MIN_ZOOM) {
+    ctx.font = '500 10px -apple-system, BlinkMacSystemFont, system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    for (const city of CITIES) {
+      const [name, lon, lat, scalerank] = city;
+      const minZoom = CITY_BASE_MIN_ZOOM + scalerank * CITY_ZOOM_PER_RANK;
+      const alpha = clamp((zoom - minZoom) / CITY_FADE_RANGE, 0, 1);
+      if (alpha <= 0) continue;
+      if (!isFrontFacing([lon, lat])) continue;
+      const p = projection([lon, lat]);
+      if (!p) continue;
+      ctx.globalAlpha = alpha;
+      ctx.beginPath();
+      ctx.arc(p[0], p[1], 1.6, 0, Math.PI * 2);
+      ctx.fillStyle = THEME.cityDot;
+      ctx.fill();
+      ctx.fillStyle = THEME.cityLabel;
+      ctx.fillText(name, p[0] + 5, p[1]);
+    }
+    ctx.globalAlpha = 1;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+  }
 
   // Astrocartography lines. Round caps/joins matter here: many MC/IC meridians converge on the
   // same pole from different angles, and flat (default) caps leave a visible star-shaped gap
