@@ -1,8 +1,15 @@
 import { BODY_COLORS, BODY_IDS } from './bodies';
 import { AstroLine, LonLat, NatalChart } from './types';
 
+// AC/DC rise/set math involves tan(latitude), which blows up at the poles, so those lines are
+// sampled well short of them. MC/IC lines have no such singularity, so they're sampled almost
+// all the way to the poles (but deliberately not touching lat=+/-90 exactly: d3's adaptive path
+// clipping is numerically unstable for great-circle segments through the literal pole/antipodal
+// point, which manifests as flickering between frames).
 const LAT_MIN = -85;
 const LAT_MAX = 85;
+const MERIDIAN_LAT_MIN = -89.5;
+const MERIDIAN_LAT_MAX = 89.5;
 const LAT_STEP = 1;
 
 const DEG2RAD = Math.PI / 180;
@@ -12,9 +19,9 @@ function normalizeLon(deg: number): number {
   return (((deg + 180) % 360) + 360) % 360 - 180;
 }
 
-function latitudeSamples(): number[] {
+function sampleLatitudes(min: number, max: number): number[] {
   const samples: number[] = [];
-  for (let lat = LAT_MIN; lat <= LAT_MAX + 1e-9; lat += LAT_STEP) {
+  for (let lat = min; lat <= max + 1e-9; lat += LAT_STEP) {
     samples.push(Math.round(lat * 100) / 100);
   }
   return samples;
@@ -35,7 +42,8 @@ function latitudeSamples(): number[] {
  *     rises there), which breaks the line into segments.
  */
 export function computeAstroLines(chart: NatalChart): AstroLine[] {
-  const lats = latitudeSamples();
+  const lats = sampleLatitudes(LAT_MIN, LAT_MAX);
+  const meridianLats = sampleLatitudes(MERIDIAN_LAT_MIN, MERIDIAN_LAT_MAX);
   const lines: AstroLine[] = [];
 
   for (const bodyId of BODY_IDS) {
@@ -50,8 +58,8 @@ export function computeAstroLines(chart: NatalChart): AstroLine[] {
     const mcLon = normalizeLon(baseLon);
     const icLon = normalizeLon(baseLon + 180);
 
-    const mcSegment: LonLat[] = lats.map((lat) => [mcLon, lat]);
-    const icSegment: LonLat[] = lats.map((lat) => [icLon, lat]);
+    const mcSegment: LonLat[] = meridianLats.map((lat) => [mcLon, lat]);
+    const icSegment: LonLat[] = meridianLats.map((lat) => [icLon, lat]);
 
     const acSegments: LonLat[][] = [];
     const dcSegments: LonLat[][] = [];

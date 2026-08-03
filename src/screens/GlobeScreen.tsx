@@ -13,13 +13,20 @@ export function GlobeScreen({ birthData }: { birthData: BirthData }) {
   const { signOut } = useAuth();
   const [houseChart, setHouseChart] = useState<HouseChart | null>(null);
   const [panelVisible, setPanelVisible] = useState(false);
+  const [pinLocation, setPinLocation] = useState<{ lat: number; lon: number } | null>(null);
 
   const natalChart = useMemo(() => computeNatalChart(new Date(birthData.birthUtc)), [birthData.birthUtc]);
   const astroLines = useMemo(() => computeAstroLines(natalChart), [natalChart]);
 
   const handleTapLocation = (lat: number, lon: number) => {
     setHouseChart(computeHouseChart(natalChart, lat, lon));
+    setPinLocation({ lat, lon });
     setPanelVisible(true);
+  };
+
+  const handleClosePanel = () => {
+    setPanelVisible(false);
+    setPinLocation(null);
   };
 
   return (
@@ -34,11 +41,11 @@ export function GlobeScreen({ birthData }: { birthData: BirthData }) {
         <Text style={styles.hint}>Touch the globe to see how the chart reads from there.</Text>
       </SafeAreaView>
 
-      <Globe lines={astroLines} onTapLocation={handleTapLocation} />
+      <Globe lines={astroLines} pinLocation={pinLocation} onTapLocation={handleTapLocation} />
 
       <RelocatedChartPanel
         visible={panelVisible}
-        onClose={() => setPanelVisible(false)}
+        onClose={handleClosePanel}
         natalChart={natalChart}
         houseChart={houseChart}
       />

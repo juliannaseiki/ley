@@ -4,7 +4,7 @@
 // Keeping this as a generated file (rather than loading assets at runtime)
 // sidesteps WebView local-asset path quirks on Android/iOS entirely.
 import { build } from 'esbuild';
-import { feature } from 'topojson-client';
+import { feature, mesh } from 'topojson-client';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -17,12 +17,25 @@ const landTopology = JSON.parse(
 );
 const landGeoJson = feature(landTopology, landTopology.objects.land);
 
+const countriesTopology = JSON.parse(
+  fs.readFileSync(path.join(root, 'node_modules/world-atlas/countries-110m.json'), 'utf8')
+);
+const borderGeoJson = mesh(countriesTopology, countriesTopology.objects.countries, (a, b) => a !== b);
+
+const usStatesTopology = JSON.parse(
+  fs.readFileSync(path.join(root, 'node_modules/us-atlas/states-10m.json'), 'utf8')
+);
+const usStateBorderGeoJson = mesh(usStatesTopology, usStatesTopology.objects.states, (a, b) => a !== b);
+
 const theme = {
-  oceanLight: '#E4F2EE',
-  oceanDeep: '#AFDCE9',
-  land: '#A9CFA3',
-  landStroke: '#8FB98A',
-  graticule: 'rgba(255,255,255,0.45)',
+  oceanLight: '#FFFFFF',
+  oceanDeep: '#FFFFFF',
+  land: '#F4FAF2',
+  landStroke: '#DCEEDA',
+  countryBorder: '#CBE4CC',
+  usStateBorder: '#DCEEDA',
+  globeOutline: '#EAF3FA',
+  pin: '#28312C',
 };
 
 const bundle = await build({
@@ -49,6 +62,8 @@ const html = `<!DOCTYPE html>
 <canvas id="globe"></canvas>
 <script>
 window.LAND_GEOJSON = ${JSON.stringify(landGeoJson)};
+window.BORDER_GEOJSON = ${JSON.stringify(borderGeoJson)};
+window.US_STATE_BORDER_GEOJSON = ${JSON.stringify(usStateBorderGeoJson)};
 window.THEME = ${JSON.stringify(theme)};
 </script>
 <script>

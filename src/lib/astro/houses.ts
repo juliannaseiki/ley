@@ -30,8 +30,8 @@ export function computeHouseChart(chart: NatalChart, latitude: number, longitude
 
   const ascendantDeg = normalizeDegrees(
     Math.atan2(
-      -Math.cos(ramcRad),
-      Math.sin(obliquityRad) * Math.tan(latRad) + Math.cos(obliquityRad) * Math.sin(ramcRad)
+      Math.cos(ramcRad),
+      -(Math.sin(obliquityRad) * Math.tan(latRad) + Math.cos(obliquityRad) * Math.sin(ramcRad))
     ) * RAD2DEG
   );
 
