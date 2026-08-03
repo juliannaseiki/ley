@@ -41,16 +41,16 @@ export const BODY_SYMBOLS: Record<BodyId, string> = {
 
 /** One calm, distinguishable color per body, chosen to read clearly over the globe's blue/green palette. */
 export const BODY_COLORS: Record<BodyId, string> = {
-  Sun: '#E7A657',
-  Moon: '#9B8EC4',
-  Mercury: '#D97F63',
-  Venus: '#E0B84E',
-  Mars: '#C1553F',
-  Jupiter: '#4E7FA8',
-  Saturn: '#8A7256',
-  Uranus: '#4FA79A',
-  Neptune: '#6A6FB0',
-  Pluto: '#96628C',
+  Sun: '#F3C98A',
+  Moon: '#C7BEE0',
+  Mercury: '#EAB29E',
+  Venus: '#EFD48C',
+  Mars: '#E0A093',
+  Jupiter: '#A8C4DC',
+  Saturn: '#C2AF97',
+  Uranus: '#A3D6CC',
+  Neptune: '#B0B3D8',
+  Pluto: '#CBA8C3',
 };
 
 export const LINE_KIND_LABELS: Record<'MC' | 'IC' | 'AC' | 'DC', string> = {

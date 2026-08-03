@@ -8,10 +8,11 @@ type WebViewOutMessage = { type: 'ready' } | { type: 'tap'; lon: number; lat: nu
 
 type Props = {
   lines: AstroLine[];
+  pinLocation: { lat: number; lon: number } | null;
   onTapLocation: (lat: number, lon: number) => void;
 };
 
-export function Globe({ lines, onTapLocation }: Props) {
+export function Globe({ lines, pinLocation, onTapLocation }: Props) {
   const webviewRef = useRef<WebView>(null);
   const [ready, setReady] = useState(false);
 
@@ -19,9 +20,25 @@ export function Globe({ lines, onTapLocation }: Props) {
     webviewRef.current?.postMessage(JSON.stringify({ type: 'lines', lines }));
   }, [lines]);
 
+  const sendPin = useCallback(() => {
+    webviewRef.current?.postMessage(
+      JSON.stringify({ type: 'pin', lat: pinLocation?.lat ?? null, lon: pinLocation?.lon ?? null })
+    );
+  }, [pinLocation]);
+
   useEffect(() => {
-    if (ready) sendLines();
+    if (!ready) return;
+    sendLines();
+    // The WebView can report "ready" a moment before its message listener is fully attached
+    // after a reload, silently dropping the first postMessage. Resending is harmless (it just
+    // re-sets the same data), so retry briefly to cover that race.
+    const retries = [150, 600].map((delay) => setTimeout(sendLines, delay));
+    return () => retries.forEach(clearTimeout);
   }, [ready, sendLines]);
+
+  useEffect(() => {
+    if (ready) sendPin();
+  }, [ready, sendPin]);
 
   const handleMessage = (event: WebViewMessageEvent) => {
     let message: WebViewOutMessage;
