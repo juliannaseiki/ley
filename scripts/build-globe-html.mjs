@@ -22,10 +22,26 @@ const countriesTopology = JSON.parse(
 );
 const borderGeoJson = mesh(countriesTopology, countriesTopology.objects.countries, (a, b) => a !== b);
 
-const usStatesTopology = JSON.parse(
-  fs.readFileSync(path.join(root, 'node_modules/us-atlas/states-10m.json'), 'utf8')
+// State/province-level boundaries for every country, not just the US. world-atlas/us-atlas only
+// bundle country-level and US-only data respectively; no npm package wraps Natural Earth's global
+// admin-1 set, so this is our own locally-committed conversion. Source: Natural Earth's
+// ne_10m_admin_1_states_provinces (the only admin-1 resolution with full global coverage — 110m/
+// 50m only cover the US and a handful of other countries), fetched from
+// https://github.com/nvkelso/natural-earth-vector, then simplified 1% and stripped to
+// name/admin properties via mapshaper:
+//   npx mapshaper -i ne_10m_admin_1_states_provinces.geojson -simplify 1% \
+//     -filter-fields name,admin -o format=topojson quantization=1e5 admin1-provinces.json
+const regionsTopology = JSON.parse(
+  fs.readFileSync(path.join(root, 'scripts/data/admin1-provinces.json'), 'utf8')
 );
-const usStateBorderGeoJson = mesh(usStatesTopology, usStatesTopology.objects.states, (a, b) => a !== b);
+const regionBorderGeoJson = mesh(regionsTopology, regionsTopology.objects.ne_10m_admin_1, (a, b) => a !== b);
+
+// City labels, shown at deep zoom, prioritized by Natural Earth's SCALERANK (0 = major world
+// cities, higher = smaller places) so bigger cities appear first and smaller ones fill in as you
+// zoom further. Source: ne_50m_populated_places (1,251 cities globally), reduced to
+// [name, lon, lat, scalerank] tuples — no polygon geometry to simplify, so no mapshaper step,
+// just stripped straight from the downloaded geojson's properties.
+const cities = JSON.parse(fs.readFileSync(path.join(root, 'scripts/data/cities.json'), 'utf8'));
 
 const theme = {
   oceanLight: '#FFFFFF',
@@ -33,9 +49,11 @@ const theme = {
   land: '#F4FAF2',
   landStroke: '#DCEEDA',
   countryBorder: '#CBE4CC',
-  usStateBorder: '#DCEEDA',
+  regionBorder: '#DCEEDA',
   globeOutline: '#EAF3FA',
   pin: '#28312C',
+  cityDot: '#8FA396',
+  cityLabel: '#5B655F',
 };
 
 const bundle = await build({
@@ -63,7 +81,8 @@ const html = `<!DOCTYPE html>
 <script>
 window.LAND_GEOJSON = ${JSON.stringify(landGeoJson)};
 window.BORDER_GEOJSON = ${JSON.stringify(borderGeoJson)};
-window.US_STATE_BORDER_GEOJSON = ${JSON.stringify(usStateBorderGeoJson)};
+window.REGION_BORDER_GEOJSON = ${JSON.stringify(regionBorderGeoJson)};
+window.CITIES = ${JSON.stringify(cities)};
 window.THEME = ${JSON.stringify(theme)};
 </script>
 <script>
