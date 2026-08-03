@@ -17,16 +17,24 @@ let dpr = Math.max(1, window.devicePixelRatio || 1);
 let rotation = [10, -12]; // [lambda, phi], degrees
 let zoom = 1;
 const MIN_ZOOM = 1;
-const MAX_ZOOM = 14;
+const MAX_ZOOM = 60;
+// Exponent applied to the raw pinch finger-distance ratio (see onPointerMove) — tuned so a single
+// comfortable pinch (roughly tripling finger distance) already clears every city reveal
+// threshold.
+const PINCH_ZOOM_POWER = 1.8;
 // Region borders ramp in smoothly across this zoom range, rather than snapping on at a single
 // threshold — same idea as Apple Maps/Flighty showing more map detail the deeper you zoom in.
 const REGION_BORDER_FADE_START = 1.4;
 const REGION_BORDER_FADE_END = 2.2;
-// Each city's own reveal zoom is CITY_BASE_MIN_ZOOM + scalerank * CITY_ZOOM_PER_RANK (scalerank 0
-// = major world city), fading in over CITY_FADE_RANGE zoom units once reached.
-const CITY_BASE_MIN_ZOOM = 2.6;
-const CITY_ZOOM_PER_RANK = 1.0;
+// Each city's reveal zoom is precomputed at build time from its population (see
+// build-globe-html.mjs) as CITIES[i][3]; CITY_BASE_MIN_ZOOM is just the lowest such value in the
+// dataset, used as a cheap early-out before scanning the array at all. Reached cities fade in
+// over CITY_FADE_RANGE zoom units. CITY_MAX_LABELS caps how many can draw on screen at once —
+// keep this low; a phone screen only comfortably fits a few dozen labels before it reads as
+// clutter regardless of how well overlap is avoided.
+const CITY_BASE_MIN_ZOOM = 2.2;
 const CITY_FADE_RANGE = 0.6;
+const CITY_MAX_LABELS = 30;
 let baseScale = 100;
 
 let astroLines = []; // [{ bodyId, kind, color, feature }]
@@ -164,29 +172,69 @@ function renderInner() {
   ctx.stroke();
 
   // City labels — deepest level of map detail, so they only start appearing well into the region
-  // border's own fade range and get progressively denser the further in you go. Each city's
-  // reveal zoom is driven by Natural Earth's own SCALERANK (0 = major world cities, higher =
-  // smaller places), so major cities show first and smaller ones fill in on top as you zoom
-  // further — same idea as Apple Maps/Flighty revealing more place names the deeper you zoom.
+  // border's own fade range and get progressively denser the further in you go, same idea as
+  // Apple Maps/Flighty revealing more place names the deeper you zoom. Each city's reveal zoom is
+  // precomputed at build time from its population (see build-globe-html.mjs) — not with a log10
+  // call here — since this runs every frame, not just at the discrete moments the astro line
+  // labels recompute at; 69,562 cities is enough that per-frame transcendental math on all of
+  // them would be a real cost.
+  //
+  // At deep zoom in a dense region, hundreds of cities can pass the zoom/visibility check in a
+  // single frame — far more than can legibly fit. Candidates are sorted by population (via their
+  // precomputed minZoom, which already encodes it) and then claimed one per grid cell in a coarse
+  // occupancy grid, so bigger cities win any conflict and a hard cap bounds the worst case, rather
+  // than drawing an unreadable, overlapping wall of text.
   if (zoom > CITY_BASE_MIN_ZOOM) {
     ctx.font = '500 10px -apple-system, BlinkMacSystemFont, system-ui, sans-serif';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
+
+    const candidates = [];
     for (const city of CITIES) {
-      const [name, lon, lat, scalerank] = city;
-      const minZoom = CITY_BASE_MIN_ZOOM + scalerank * CITY_ZOOM_PER_RANK;
-      const alpha = clamp((zoom - minZoom) / CITY_FADE_RANGE, 0, 1);
-      if (alpha <= 0) continue;
+      const [name, lon, lat, minZoom] = city;
+      if (zoom <= minZoom) continue;
+      // isFrontFacing alone is a hemisphere check, not an "is this actually in view" check — at
+      // any real zoom, that hemisphere covers a huge stretch of the globe (way beyond the visible
+      // canvas), so without also checking the projected point is within the canvas, cities on the
+      // other side of the world could still qualify. Since they're sorted by population next,
+      // major world cities (always front-facing from anywhere, always highest priority) would
+      // then consume the entire CITY_MAX_LABELS budget before a single actually-visible city near
+      // the current view ever got a turn — which is exactly what was happening.
       if (!isFrontFacing([lon, lat])) continue;
       const p = projection([lon, lat]);
       if (!p) continue;
-      ctx.globalAlpha = alpha;
+      if (p[0] < 0 || p[0] > width || p[1] < 0 || p[1] > height) continue;
+      candidates.push({ name, x: p[0], y: p[1], minZoom, alpha: clamp((zoom - minZoom) / CITY_FADE_RANGE, 0, 1) });
+    }
+    // Lower minZoom = bigger population (see build-time formula) = higher priority.
+    candidates.sort((a, b) => a.minZoom - b.minZoom);
+
+    // A fixed grid cell doesn't account for actual text width — a long name overlaps its
+    // neighbor regardless of which cell each dot falls in. Real bounding-box collision, checked
+    // in priority order and stopping at a small hard cap, both keeps text from overlapping and
+    // keeps the screen from turning into a wall of labels: only measure/check as many candidates
+    // as it takes to either fill the cap or run out, not the full (possibly huge) candidate list.
+    const placed = [];
+    for (const c of candidates) {
+      if (placed.length >= CITY_MAX_LABELS) break;
+      const textWidth = ctx.measureText(c.name).width;
+      const left = c.x - 3;
+      const right = c.x + 5 + textWidth + 4;
+      const top = c.y - 8;
+      const bottom = c.y + 8;
+      const collides = placed.some((p) => !(right < p.left || left > p.right || bottom < p.top || top > p.bottom));
+      if (collides) continue;
+      placed.push({ ...c, left, right, top, bottom });
+    }
+
+    for (const c of placed) {
+      ctx.globalAlpha = c.alpha;
       ctx.beginPath();
-      ctx.arc(p[0], p[1], 1.6, 0, Math.PI * 2);
+      ctx.arc(c.x, c.y, 1.6, 0, Math.PI * 2);
       ctx.fillStyle = THEME.cityDot;
       ctx.fill();
       ctx.fillStyle = THEME.cityLabel;
-      ctx.fillText(name, p[0] + 5, p[1]);
+      ctx.fillText(c.name, c.x + 5, c.y);
     }
     ctx.globalAlpha = 1;
     ctx.textAlign = 'center';
@@ -599,7 +647,13 @@ function onPointerMove(e) {
     const [a, b] = Array.from(pointers.values());
     const dist = distanceBetween(a, b);
     if (pinchStart.distance > 0) {
-      zoom = clamp((dist / pinchStart.distance) * pinchStart.zoom, MIN_ZOOM, MAX_ZOOM);
+      // Raising the raw finger-distance ratio to a power (rather than using it directly) means a
+      // single comfortable pinch reaches deep zoom on its own, rather than needing finger distance
+      // to grow by the same multiple as the zoom change (awkward on a phone screen for anything
+      // past a couple of x). This only changes how fast a pinch moves through the range, not the
+      // range itself.
+      const ratio = Math.pow(dist / pinchStart.distance, PINCH_ZOOM_POWER);
+      zoom = clamp(ratio * pinchStart.zoom, MIN_ZOOM, MAX_ZOOM);
       applyScale();
       render();
     }
