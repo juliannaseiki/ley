@@ -68,6 +68,11 @@ export function computeAstroLines(chart: NatalChart): AstroLine[] {
     const mcSegment: LonLat[] = meridianLats.map((lat) => [mcLon, lat]);
     const icSegment: LonLat[] = meridianLats.map((lat) => [icLon, lat]);
 
+    // Each stays a single continuous segment even where longitude wraps past +/-180 — that only
+    // needs splitting on a flat map with a hard edge at the antimeridian. On this orthographic
+    // globe there is no such edge; d3's projection already renders a wrap as a smooth, continuous
+    // arc (two points 2deg apart at +179/-179 project right next to each other on screen).
+    // Splitting here previously cut these lines in two at every dateline crossing.
     const acPoints: LonLat[] = [];
     const dcPoints: LonLat[] = [];
     for (let hDeg = -180 + H_STEP; hDeg <= 180; hDeg += H_STEP) {
@@ -82,29 +87,9 @@ export function computeAstroLines(chart: NatalChart): AstroLine[] {
 
     lines.push({ bodyId, kind: 'MC', color, segments: [mcSegment] });
     lines.push({ bodyId, kind: 'IC', color, segments: [icSegment] });
-    lines.push({ bodyId, kind: 'AC', color, segments: splitOnAntimeridianJump([acPoints]) });
-    lines.push({ bodyId, kind: 'DC', color, segments: splitOnAntimeridianJump([dcPoints]) });
+    lines.push({ bodyId, kind: 'AC', color, segments: [acPoints] });
+    lines.push({ bodyId, kind: 'DC', color, segments: [dcPoints] });
   }
 
   return lines;
-}
-
-/** Breaks a segment wherever consecutive points imply a >180deg jump, so wraparound at +/-180 renders as two segments instead of a spurious line straight across the map. */
-function splitOnAntimeridianJump(segments: LonLat[][]): LonLat[][] {
-  const result: LonLat[][] = [];
-  for (const segment of segments) {
-    let current: LonLat[] = [segment[0]];
-    for (let i = 1; i < segment.length; i++) {
-      const [prevLon] = segment[i - 1];
-      const [lon] = segment[i];
-      if (Math.abs(lon - prevLon) > 180) {
-        if (current.length > 1) result.push(current);
-        current = [segment[i]];
-      } else {
-        current.push(segment[i]);
-      }
-    }
-    if (current.length > 1) result.push(current);
-  }
-  return result;
 }
