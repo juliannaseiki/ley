@@ -116,7 +116,11 @@ function renderInner() {
   ctx.strokeStyle = THEME.countryBorder;
   ctx.stroke();
 
-  // Astrocartography lines.
+  // Astrocartography lines. Round caps/joins matter here: many MC/IC meridians converge on the
+  // same pole from different angles, and flat (default) caps leave a visible star-shaped gap
+  // right at that shared point instead of a clean convergence.
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
   for (const line of astroLines) {
     ctx.beginPath();
     path(line.feature);
