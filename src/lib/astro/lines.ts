@@ -1,16 +1,14 @@
 import { BODY_COLORS, BODY_IDS } from './bodies';
 import { AstroLine, LonLat, NatalChart } from './types';
 
-// AC/DC rise/set math involves tan(latitude), which blows up at the poles, so those lines are
-// sampled well short of them. MC/IC lines have no such singularity, so they're sampled almost
-// all the way to the poles (but deliberately not touching lat=+/-90 exactly: d3's adaptive path
-// clipping is numerically unstable for great-circle segments through the literal pole/antipodal
-// point, which manifests as flickering between frames).
-const LAT_MIN = -85;
-const LAT_MAX = 85;
-const MERIDIAN_LAT_MIN = -89.5;
-const MERIDIAN_LAT_MAX = 89.5;
+// MC/IC lines have no singularity, so they're densely sampled all the way to the literal poles
+// — d3's projection is numerically exact there (every meridian maps to the same pixel regardless
+// of longitude), so this converges cleanly as long as the lines are drawn with round caps (see
+// globe-entry.js) rather than flat ones.
+const MERIDIAN_LAT_MIN = -90;
+const MERIDIAN_LAT_MAX = 90;
 const LAT_STEP = 1;
+const H_STEP = 1;
 
 const DEG2RAD = Math.PI / 180;
 const RAD2DEG = 180 / Math.PI;
@@ -36,13 +34,19 @@ function sampleLatitudes(min: number, max: number): number[] {
  *   - MC longitude = RA - GAST (a full meridian, all latitudes)
  *   - IC longitude = MC longitude + 180
  *   - At geographic latitude φ, the body is on the horizon when the hour angle H
- *     satisfies cos(H) = -tan(φ) * tan(δ); H0 = acos(...) in [0, 180].
- *     Rising (AC): longitude = RA - GAST - H0.  Setting (DC): longitude = RA - GAST + H0.
- *     No solution exists where |tan(φ) * tan(δ)| > 1 (the body is circumpolar or never
- *     rises there), which breaks the line into segments.
+ *     satisfies cos(H) = -tan(φ) * tan(δ).
+ *
+ * AC/DC are parametrized by H directly (lat = atan(-cos(H) / tan(δ))) rather than by solving
+ * for H at each sampled latitude. The two are mathematically equivalent, but H -> lat is smooth
+ * and bounded for every H (atan's range is always within (-90, 90)), while lat -> H has an
+ * unbounded derivative near the circumpolar limit — fixed-latitude sampling there produces huge
+ * jumps in longitude between adjacent points, rendering as a jagged, broken-looking curve right
+ * where it should sweep smoothly through the limit. H in (0, 180] traces the rising (AC) branch;
+ * H in [-180, 0] traces the setting (DC) branch. Each sweeps the body's full valid latitude
+ * range on its own, from one circumpolar limit through the equator to the other, with no need to
+ * detect or break out of a circumpolar case at all.
  */
 export function computeAstroLines(chart: NatalChart): AstroLine[] {
-  const lats = sampleLatitudes(LAT_MIN, LAT_MAX);
   const meridianLats = sampleLatitudes(MERIDIAN_LAT_MIN, MERIDIAN_LAT_MAX);
   const lines: AstroLine[] = [];
 
@@ -54,6 +58,9 @@ export function computeAstroLines(chart: NatalChart): AstroLine[] {
     const baseLon = position.raDeg - chart.gastDeg;
     const decRad = position.decDeg * DEG2RAD;
     const tanDec = Math.tan(decRad);
+    // Guard the (extremely rare) instant a body sits exactly on the celestial equator, which
+    // would otherwise divide by zero below.
+    const safeTanDec = Math.abs(tanDec) < 1e-6 ? (tanDec < 0 ? -1e-6 : 1e-6) : tanDec;
 
     const mcLon = normalizeLon(baseLon);
     const icLon = normalizeLon(baseLon + 180);
@@ -61,34 +68,22 @@ export function computeAstroLines(chart: NatalChart): AstroLine[] {
     const mcSegment: LonLat[] = meridianLats.map((lat) => [mcLon, lat]);
     const icSegment: LonLat[] = meridianLats.map((lat) => [icLon, lat]);
 
-    const acSegments: LonLat[][] = [];
-    const dcSegments: LonLat[][] = [];
-    let acCurrent: LonLat[] = [];
-    let dcCurrent: LonLat[] = [];
-
-    for (const lat of lats) {
-      const tanLat = Math.tan(lat * DEG2RAD);
-      const cosH = -tanLat * tanDec;
-
-      if (cosH < -1 || cosH > 1) {
-        if (acCurrent.length > 1) acSegments.push(acCurrent);
-        if (dcCurrent.length > 1) dcSegments.push(dcCurrent);
-        acCurrent = [];
-        dcCurrent = [];
-        continue;
+    const acPoints: LonLat[] = [];
+    const dcPoints: LonLat[] = [];
+    for (let hDeg = -180 + H_STEP; hDeg <= 180; hDeg += H_STEP) {
+      const lat = Math.atan(-Math.cos(hDeg * DEG2RAD) / safeTanDec) * RAD2DEG;
+      const lon = normalizeLon(baseLon - hDeg);
+      if (hDeg > 0) {
+        acPoints.push([lon, lat]);
+      } else {
+        dcPoints.push([lon, lat]);
       }
-
-      const h0 = Math.acos(cosH) * RAD2DEG;
-      acCurrent.push([normalizeLon(baseLon - h0), lat]);
-      dcCurrent.push([normalizeLon(baseLon + h0), lat]);
     }
-    if (acCurrent.length > 1) acSegments.push(acCurrent);
-    if (dcCurrent.length > 1) dcSegments.push(dcCurrent);
 
     lines.push({ bodyId, kind: 'MC', color, segments: [mcSegment] });
     lines.push({ bodyId, kind: 'IC', color, segments: [icSegment] });
-    lines.push({ bodyId, kind: 'AC', color, segments: splitOnAntimeridianJump(acSegments) });
-    lines.push({ bodyId, kind: 'DC', color, segments: splitOnAntimeridianJump(dcSegments) });
+    lines.push({ bodyId, kind: 'AC', color, segments: splitOnAntimeridianJump([acPoints]) });
+    lines.push({ bodyId, kind: 'DC', color, segments: splitOnAntimeridianJump([dcPoints]) });
   }
 
   return lines;
