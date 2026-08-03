@@ -23,17 +23,29 @@ let baseScale = 100;
 let astroLines = []; // [{ bodyId, kind, color, feature }]
 let pin = null; // [lon, lat] or null
 
+// U+FE0E (text presentation selector) forces plain text glyphs for Venus/Mars specifically —
+// unlike the other astrological symbols here, ♀/♂ double as the "female"/"male" emoji and iOS
+// renders them with emoji presentation (a differently shaped, differently metriced glyph) by
+// default, which is what threw off their alignment even after correcting for font metrics.
 const BODY_GLYPHS = {
   Sun: '☉',
   Moon: '☽',
   Mercury: '☿',
-  Venus: '♀',
-  Mars: '♂',
+  Venus: '♀︎',
+  Mars: '♂︎',
   Jupiter: '♃',
   Saturn: '♄',
   Uranus: '♅',
   Neptune: '♆',
   Pluto: '♇',
+};
+
+// Small manual correction layered on top of the measured glyphBaselineShift (negative moves a
+// glyph up). Empirical — only touch a body here if its label visibly sits off after the measured
+// correction.
+const GLYPH_BASELINE_FINE_TUNE = {
+  Venus: -1.5,
+  Mars: -1.5,
 };
 
 const AUTO_ROTATE_DEG_PER_MS = 360 / (1000 * 60 * 4.5); // one turn per 4.5 minutes
@@ -131,24 +143,64 @@ function renderInner() {
   }
   ctx.globalAlpha = 1;
 
-  // Line labels (planet glyph + angle), staggered vertically so nearby labels don't overlap.
-  ctx.font = '600 11px -apple-system, BlinkMacSystemFont, system-ui, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  const candidates = [];
-  for (const line of astroLines) {
-    if (!line.anchor || !isFrontFacing(line.anchor)) continue;
-    const p = projection(line.anchor);
-    if (!p) continue;
-    const text = `${BODY_GLYPHS[line.bodyId] || line.bodyId} ${line.kind}`;
-    candidates.push({ x: p[0], y: p[1], text, color: line.color, width: ctx.measureText(text).width });
-  }
-  for (const label of layoutLabels(candidates)) {
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-    ctx.strokeText(label.text, label.x, label.y);
-    ctx.fillStyle = label.color;
-    ctx.fillText(label.text, label.x, label.y);
+  // Line labels (planet glyph + angle), only shown once the user has zoomed in — at full
+  // zoom-out there are too many of them, too close together, to read cleanly regardless of
+  // layout. Staggered vertically so nearby labels don't overlap.
+  //
+  // The glyph and the "MC"/"IC"/etc. text are measured and drawn as two separate pieces rather
+  // than one string: the astrological glyphs render in a different fallback font than the Latin
+  // text, and that font's own idea of vertical center rarely matches — no shared textBaseline
+  // setting fixes that, since it's a font-metric mismatch, not a baseline one. Measuring each
+  // piece's actual rendered bounding box and aligning their visual centers works regardless of
+  // which font actually renders the glyph.
+  if (zoom > MIN_ZOOM) {
+    ctx.font = '600 11px -apple-system, BlinkMacSystemFont, system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    const GLYPH_KIND_GAP = 3;
+    const candidates = [];
+    for (const line of astroLines) {
+      if (!line.anchor || !isFrontFacing(line.anchor)) continue;
+      const p = projection(line.anchor);
+      if (!p) continue;
+      const glyph = BODY_GLYPHS[line.bodyId] || line.bodyId;
+      const kind = line.kind;
+      const glyphMetrics = ctx.measureText(glyph);
+      const kindMetrics = ctx.measureText(kind);
+      const width = glyphMetrics.width + GLYPH_KIND_GAP + kindMetrics.width;
+      candidates.push({
+        x: p[0],
+        y: p[1],
+        glyph,
+        kind,
+        glyphWidth: glyphMetrics.width,
+        // Baseline offset that aligns this glyph's visual vertical center with the kind text's.
+        // The measured correction leaves Venus/Mars sitting slightly low regardless — the
+        // fallback symbol font's reported bounding box for those two is a bit imprecise — so
+        // nudge them up a touch on top of the measured value.
+        glyphBaselineShift:
+          (kindMetrics.actualBoundingBoxAscent - kindMetrics.actualBoundingBoxDescent) / 2 -
+          (glyphMetrics.actualBoundingBoxAscent - glyphMetrics.actualBoundingBoxDescent) / 2 +
+          (GLYPH_BASELINE_FINE_TUNE[line.bodyId] || 0),
+        color: line.color,
+        width,
+      });
+    }
+    for (const label of layoutLabels(candidates)) {
+      const startX = label.x - label.width / 2;
+      const glyphX = startX;
+      const glyphY = label.y + label.glyphBaselineShift;
+      const kindX = startX + label.glyphWidth + GLYPH_KIND_GAP;
+
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+      ctx.strokeText(label.glyph, glyphX, glyphY);
+      ctx.strokeText(label.kind, kindX, label.y);
+      ctx.fillStyle = label.color;
+      ctx.fillText(label.glyph, glyphX, glyphY);
+      ctx.fillText(label.kind, kindX, label.y);
+    }
+    ctx.textAlign = 'center';
   }
 
   // Thin globe edge outline.
@@ -191,14 +243,20 @@ function isFrontFacing([lon, lat]) {
 function layoutLabels(candidates) {
   const lineHeight = 13;
   const paddingX = 4;
+  // Bounds in a font's own metrics for the alphabetic baseline (ascent above, descent below).
+  const ascent = 9;
+  const descent = 3;
+  // Cap how far a label can be nudged away from its true anchor — better to accept some overlap
+  // in a dense cluster than to let a long collision chain fling a label off-screen.
+  const maxAttempts = 6;
   const placed = [];
   for (const c of candidates) {
     let y = c.y - 8;
-    for (let attempt = 0; attempt < 40; attempt++) {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const left = c.x - c.width / 2 - paddingX;
       const right = c.x + c.width / 2 + paddingX;
-      const top = y - lineHeight / 2;
-      const bottom = y + lineHeight / 2;
+      const top = y - ascent;
+      const bottom = y + descent;
       const collides = placed.some((p) => !(right < p.left || left > p.right || bottom < p.top || top > p.bottom));
       if (!collides) break;
       y -= lineHeight;
@@ -206,12 +264,16 @@ function layoutLabels(candidates) {
     placed.push({
       x: c.x,
       y,
-      text: c.text,
+      glyph: c.glyph,
+      kind: c.kind,
+      glyphWidth: c.glyphWidth,
+      glyphBaselineShift: c.glyphBaselineShift,
+      width: c.width,
       color: c.color,
       left: c.x - c.width / 2 - paddingX,
       right: c.x + c.width / 2 + paddingX,
-      top: y - lineHeight / 2,
-      bottom: y + lineHeight / 2,
+      top: y - ascent,
+      bottom: y + descent,
     });
   }
   return placed;
