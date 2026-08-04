@@ -1,8 +1,8 @@
 import { geoOrthographic, geoPath } from 'd3-geo';
 
-// LAND_GEOJSON, BORDER_GEOJSON, REGION_BORDER_GEOJSON, CITIES, and THEME are injected as globals
-// by the HTML wrapper at build time.
-/* global LAND_GEOJSON, BORDER_GEOJSON, REGION_BORDER_GEOJSON, CITIES, THEME */
+// LAND_GEOJSON, BORDER_GEOJSON, REGION_BORDER_GEOJSON, ELEVATION_BAND_GEOJSON, CITIES, and THEME
+// are injected as globals by the HTML wrapper at build time.
+/* global LAND_GEOJSON, BORDER_GEOJSON, REGION_BORDER_GEOJSON, ELEVATION_BAND_GEOJSON, CITIES, THEME */
 
 const canvas = document.getElementById('globe');
 const ctx = canvas.getContext('2d');
@@ -26,6 +26,11 @@ const PINCH_ZOOM_POWER = 1.8;
 // threshold — same idea as Apple Maps/Flighty showing more map detail the deeper you zoom in.
 const REGION_BORDER_FADE_START = 1.4;
 const REGION_BORDER_FADE_END = 2.2;
+// Elevation tint starts fading in a touch before region borders, so the globe reads as flat and
+// simple at rest and gradually reveals terrain as the very first thing zooming in uncovers, ahead
+// of the border/city layers of detail.
+const ELEVATION_FADE_START = 1.3;
+const ELEVATION_FADE_END = 3.5;
 // Each city's reveal zoom is precomputed at build time from its population (see
 // build-globe-html.mjs) as CITIES[i][3]; CITY_BASE_MIN_ZOOM is just the lowest such value in the
 // dataset, used as a cheap early-out before scanning the array at all. Reached cities fade in
@@ -137,7 +142,12 @@ function renderInner() {
   ctx.fillStyle = oceanGradient;
   ctx.fill();
 
-  // Land.
+  // Land — a flat base fill first, then flat elevation-tinted bands faded in on top as the user
+  // zooms in (see elevationAlpha below), so the globe reads as simple and flat at rest and reveals
+  // terrain as a layer of detail rather than always being on. The bands also come from a different
+  // source (a downsampled elevation grid) than the coastline outline (a vector dataset), so they
+  // don't align pixel-perfectly; drawing the plain land fill underneath first means any sliver gap
+  // at the coast reveals that same land tone instead of the white ocean, rather than a visible seam.
   ctx.beginPath();
   path(LAND_GEOJSON);
   ctx.fillStyle = THEME.land;
@@ -145,6 +155,22 @@ function renderInner() {
   ctx.lineWidth = 0.8;
   ctx.strokeStyle = THEME.landStroke;
   ctx.stroke();
+
+  const elevationAlpha = clamp(
+    (zoom - ELEVATION_FADE_START) / (ELEVATION_FADE_END - ELEVATION_FADE_START),
+    0,
+    1
+  );
+  if (elevationAlpha > 0) {
+    ctx.globalAlpha = elevationAlpha;
+    for (const bandFeature of ELEVATION_BAND_GEOJSON.features) {
+      ctx.beginPath();
+      path(bandFeature);
+      ctx.fillStyle = bandFeature.properties.color;
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
 
   // State/province borders for every country, drawn under country borders (so the country
   // outline reads as the more prominent line) and only faded in once zoomed in a bit — at full
