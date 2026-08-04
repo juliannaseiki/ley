@@ -26,6 +26,13 @@ const PINCH_ZOOM_POWER = 1.8;
 // threshold — same idea as Apple Maps/Flighty showing more map detail the deeper you zoom in.
 const REGION_BORDER_FADE_START = 1.4;
 const REGION_BORDER_FADE_END = 2.2;
+// Line labels used to appear the instant zoom exceeded MIN_ZOOM at all — with up to 40 of them
+// (10 bodies x 4 angles) all converging toward the poles, that meant a screenful of overlapping
+// pills the moment a pinch even started. Gating on a real threshold, faded in like region
+// borders, keeps the view calm until the user has actually zoomed in enough for individual lines
+// to have spread apart on screen.
+const LABEL_ZOOM_FADE_START = 1.8;
+const LABEL_ZOOM_FADE_END = 2.4;
 // Elevation tint starts fading in a touch before region borders, so the globe reads as flat and
 // simple at rest and gradually reveals terrain as the very first thing zooming in uncovers, ahead
 // of the border/city layers of detail.
@@ -296,11 +303,16 @@ function renderInner() {
   // comment for why), but each label's anchor is re-projected live every frame so it rotates
   // naturally with its line — it stays on the line, just riding along with the globe — rather
   // than sitting frozen at a fixed screen position while the line moves underneath it.
-  if (zoom > MIN_ZOOM) {
+  const labelZoomAlpha = clamp(
+    (zoom - LABEL_ZOOM_FADE_START) / (LABEL_ZOOM_FADE_END - LABEL_ZOOM_FADE_START),
+    0,
+    1
+  );
+  if (labelZoomAlpha > 0) {
     ctx.font = '600 11px -apple-system, BlinkMacSystemFont, system-ui, sans-serif';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
-    ctx.globalAlpha = Math.min(1, (performance.now() - labelsFadeStartAt) / LABEL_FADE_MS);
+    ctx.globalAlpha = Math.min(1, (performance.now() - labelsFadeStartAt) / LABEL_FADE_MS) * labelZoomAlpha;
     for (const label of renderedLabels) {
       const box = projectLabelBox(label);
       if (!box) continue;
@@ -403,7 +415,7 @@ function projectLabelBox(label) {
 // neighbors) — testing the label's actual drawn box first means tapping the pill always works,
 // even when it's no longer sitting right on top of the stroke.
 function hitTestLabel(x, y) {
-  if (zoom <= MIN_ZOOM) return null; // labels aren't drawn at all below this zoom
+  if (zoom <= LABEL_ZOOM_FADE_START) return null; // labels aren't drawn at all below this zoom
   for (const label of renderedLabels) {
     const box = projectLabelBox(label);
     if (!box) continue;
