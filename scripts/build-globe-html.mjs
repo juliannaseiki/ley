@@ -36,23 +36,24 @@ const regionsTopology = JSON.parse(
 );
 const regionBorderGeoJson = mesh(regionsTopology, regionsTopology.objects.ne_10m_admin_1, (a, b) => a !== b);
 
-// City labels, shown at deep zoom. Source: GeoNames' cities5000 dump (every populated place with
-// population >= 5,000 - https://download.geonames.org/export/dump/), reduced to
-// [name, lon, lat, population] tuples in scripts/data/cities.json - no polygon geometry to
+// City/town labels, shown at deep zoom. Source: GeoNames' cities1000 dump (every populated place
+// with population >= 1,000 - https://download.geonames.org/export/dump/cities1000.zip), reduced
+// to [name, lon, lat, population] tuples in scripts/data/cities.json - no polygon geometry to
 // simplify, so no mapshaper step, just name/lat/lon/population stripped straight from the
-// downloaded dump. Population is converted to each city's reveal-zoom threshold here at build
-// time (not in the renderer): the renderer scans this list every frame, not just at the discrete
-// recompute moments the astro line labels use, so a log10 call per city per frame across 69,562
-// cities isn't worth paying for — do it once here instead and ship the plain number.
+// downloaded dump (tab-separated columns 2/5/6/15). Population is converted to each city's
+// reveal-zoom threshold here at build time (not in the renderer): the renderer scans this list
+// every frame, not just at the discrete recompute moments the astro line labels use, so a log10
+// call per city per frame across 170,569 places isn't worth paying for — do it once here instead
+// and ship the plain number.
 // Pinch-zoom is ratio-based (current finger distance / distance when the pinch started) and
 // compounds only across repeated pinch gestures, not one continuous one — a single realistic
 // pinch on a phone screen realistically reaches roughly 5-8x, not the kind of 12-20x a naive
 // log-population spread wants. These constants keep every population tier reachable within
 // that range; MAX_ZOOM going higher than this is about the globe surface feeling deep to
 // explore, not a requirement for any city tier to ever show up.
-const CITY_BASE_MIN_ZOOM = 2.2; // cities start once region borders (fade ends at zoom 2.2) are fully in
+const CITY_BASE_MIN_ZOOM = 2.8; // cities start a bit after region borders (fade ends at zoom 2.2) are fully in
 const CITY_LOG_POP_MAX = 7.4; // roughly Tokyo-scale (~37M) - the top of the log-population range
-const CITY_ZOOM_PER_LOG_POP = 1.0;
+const CITY_ZOOM_PER_LOG_POP = 1.3;
 function minZoomForPopulation(population) {
   const logPop = Math.log10(Math.max(population, 10));
   return Math.round((CITY_BASE_MIN_ZOOM + Math.max(0, CITY_LOG_POP_MAX - logPop) * CITY_ZOOM_PER_LOG_POP) * 100) / 100;

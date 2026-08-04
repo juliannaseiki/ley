@@ -38,7 +38,6 @@ export function GlobeScreen({ birthData }: { birthData: BirthData }) {
             <Text style={styles.signOut}>Log out</Text>
           </Pressable>
         </View>
-        <Text style={styles.hint}>Touch the globe to see how the chart reads from there.</Text>
       </SafeAreaView>
 
       <Globe lines={astroLines} pinLocation={pinLocation} onTapLocation={handleTapLocation} />
