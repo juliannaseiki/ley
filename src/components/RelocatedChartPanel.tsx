@@ -1,7 +1,15 @@
 import React, { useEffect, useRef } from 'react';
 import { Animated, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { BODY_IDS, BODY_COLORS, BODY_LABELS, BODY_SYMBOLS, eclipticLonToSign } from '../lib/astro/bodies';
-import { HouseChart, NatalChart } from '../lib/astro/types';
+import {
+  BODY_IDS,
+  BODY_COLORS,
+  BODY_LABELS,
+  BODY_SYMBOLS,
+  LINE_KIND_LABELS,
+  eclipticLonToSign,
+} from '../lib/astro/bodies';
+import { LINE_DESCRIPTIONS } from '../lib/astro/lineDescriptions';
+import { BodyId, HouseChart, LineKind, NatalChart } from '../lib/astro/types';
 import { formatCoords } from '../lib/formatCoords';
 import { colors, fonts, radii, spacing } from '../theme';
 
@@ -10,9 +18,10 @@ type Props = {
   onClose: () => void;
   natalChart: NatalChart;
   houseChart: HouseChart | null;
+  selectedLine: { bodyId: BodyId; kind: LineKind } | null;
 };
 
-export function RelocatedChartPanel({ visible, onClose, natalChart, houseChart }: Props) {
+export function RelocatedChartPanel({ visible, onClose, natalChart, houseChart, selectedLine }: Props) {
   const translateY = useRef(new Animated.Value(400)).current;
 
   useEffect(() => {
@@ -25,10 +34,7 @@ export function RelocatedChartPanel({ visible, onClose, natalChart, houseChart }
     }).start();
   }, [visible, translateY]);
 
-  if (!houseChart) return null;
-
-  const ascendant = eclipticLonToSign(houseChart.ascendantDeg);
-  const midheaven = eclipticLonToSign(houseChart.midheavenDeg);
+  if (!houseChart && !selectedLine) return null;
 
   return (
     <Animated.View
@@ -36,6 +42,59 @@ export function RelocatedChartPanel({ visible, onClose, natalChart, houseChart }
       style={[styles.panel, { transform: [{ translateY }] }]}
     >
       <View style={styles.handle} />
+      {selectedLine ? (
+        <LineContent selectedLine={selectedLine} onClose={onClose} />
+      ) : houseChart ? (
+        <LocationContent natalChart={natalChart} houseChart={houseChart} onClose={onClose} />
+      ) : null}
+    </Animated.View>
+  );
+}
+
+function LineContent({
+  selectedLine,
+  onClose,
+}: {
+  selectedLine: { bodyId: BodyId; kind: LineKind };
+  onClose: () => void;
+}) {
+  const { bodyId, kind } = selectedLine;
+  return (
+    <>
+      <View style={styles.headerRow}>
+        <View>
+          <Text style={styles.eyebrow}>{LINE_KIND_LABELS[kind]} line</Text>
+          <View style={styles.lineHeading}>
+            <Text style={[styles.symbol, styles.lineSymbol, { color: BODY_COLORS[bodyId] }]}>
+              {BODY_SYMBOLS[bodyId]}
+            </Text>
+            <Text style={styles.coords}>{BODY_LABELS[bodyId]}</Text>
+          </View>
+        </View>
+        <Pressable onPress={onClose} hitSlop={12} style={styles.closeButton}>
+          <Text style={styles.closeLabel}>Close</Text>
+        </Pressable>
+      </View>
+
+      <Text style={styles.note}>{LINE_DESCRIPTIONS[bodyId][kind]}</Text>
+    </>
+  );
+}
+
+function LocationContent({
+  natalChart,
+  houseChart,
+  onClose,
+}: {
+  natalChart: NatalChart;
+  houseChart: HouseChart;
+  onClose: () => void;
+}) {
+  const ascendant = eclipticLonToSign(houseChart.ascendantDeg);
+  const midheaven = eclipticLonToSign(houseChart.midheavenDeg);
+
+  return (
+    <>
       <View style={styles.headerRow}>
         <View>
           <Text style={styles.eyebrow}>Reading the sky from</Text>
@@ -87,7 +146,7 @@ export function RelocatedChartPanel({ visible, onClose, natalChart, houseChart }
           );
         })}
       </ScrollView>
-    </Animated.View>
+    </>
   );
 }
 
@@ -134,6 +193,16 @@ const styles = StyleSheet.create({
     fontFamily: fonts.headingSemiBold,
     fontSize: 22,
     color: colors.ink,
+    marginTop: 2,
+  },
+  lineHeading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+  },
+  lineSymbol: {
+    fontSize: 20,
+    width: undefined,
     marginTop: 2,
   },
   closeButton: {

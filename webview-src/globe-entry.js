@@ -17,7 +17,7 @@ let dpr = Math.max(1, window.devicePixelRatio || 1);
 let rotation = [10, -12]; // [lambda, phi], degrees
 let zoom = 1;
 const MIN_ZOOM = 1;
-const MAX_ZOOM = 60;
+const MAX_ZOOM = 100;
 // Exponent applied to the raw pinch finger-distance ratio (see onPointerMove) — tuned so a single
 // comfortable pinch (roughly tripling finger distance) already clears every city reveal
 // threshold.
@@ -26,6 +26,13 @@ const PINCH_ZOOM_POWER = 1.8;
 // threshold — same idea as Apple Maps/Flighty showing more map detail the deeper you zoom in.
 const REGION_BORDER_FADE_START = 1.4;
 const REGION_BORDER_FADE_END = 2.2;
+// Line labels used to appear the instant zoom exceeded MIN_ZOOM at all — with up to 40 of them
+// (10 bodies x 4 angles) all converging toward the poles, that meant a screenful of overlapping
+// pills the moment a pinch even started. Gating on a real threshold, faded in like region
+// borders, keeps the view calm until the user has actually zoomed in enough for individual lines
+// to have spread apart on screen.
+const LABEL_ZOOM_FADE_START = 1.8;
+const LABEL_ZOOM_FADE_END = 2.4;
 // Elevation tint starts fading in a touch before region borders, so the globe reads as flat and
 // simple at rest and gradually reveals terrain as the very first thing zooming in uncovers, ahead
 // of the border/city layers of detail.
@@ -33,13 +40,36 @@ const ELEVATION_FADE_START = 1.3;
 const ELEVATION_FADE_END = 3.5;
 // Each city's reveal zoom is precomputed at build time from its population (see
 // build-globe-html.mjs) as CITIES[i][3]; CITY_BASE_MIN_ZOOM is just the lowest such value in the
-// dataset, used as a cheap early-out before scanning the array at all. Reached cities fade in
-// over CITY_FADE_RANGE zoom units. CITY_MAX_LABELS caps how many can draw on screen at once —
-// keep this low; a phone screen only comfortably fits a few dozen labels before it reads as
-// clutter regardless of how well overlap is avoided.
-const CITY_BASE_MIN_ZOOM = 2.2;
-const CITY_FADE_RANGE = 0.6;
-const CITY_MAX_LABELS = 30;
+// dataset, used as a cheap early-out before scanning the array at all — keep this in sync with the
+// build script's own CITY_BASE_MIN_ZOOM. Reached cities ease in via the time-based fade in
+// recomputeCityLabels/renderInner, not a zoom-based one — recomputeCityLabels only runs at gesture
+// end now (not continuously through a pinch), so a fade tied to zoom itself has no gesture left to
+// animate across and would just get stuck part-way whenever the user settles at a zoom inside that
+// city's fade window. CITY_MAX_LABELS caps how many can draw on screen at once — keep this low; a
+// phone screen only comfortably fits a dozen or so labels before it reads as clutter regardless of
+// how well overlap is avoided.
+const CITY_BASE_MIN_ZOOM = 2.8;
+const CITY_MAX_LABELS = 12;
+// See the comment in recomputeCityLabels' retained-eligibility check — this is the margin below a
+// city's own reveal threshold that zoom has to actually cross before an already-shown city drops
+// for that reason, so a sub-threshold zoom wobble doesn't read as random flicker.
+const CITY_RETAIN_HYSTERESIS = 0.4;
+// The full candidate scan + collision layout (recomputeCityLabels) is too expensive to run on
+// every single animation frame now that CITIES has grown to 170k+ entries — a drag gesture fires
+// render() on every pointermove, so "every frame" during an active drag was actually more like
+// "every few milliseconds". Recomputing on a timer instead (rather than every frame) just traded
+// one bug for another: the collision layout is order-dependent on current screen position, so two
+// snapshots a couple hundred ms apart during a drag can pick different subsets of an unchanged set
+// of on-screen cities, and a still-visible city loses its slot — reads as labels randomly
+// vanishing while just panning around. Recomputing only at the end of a gesture (see onPointerUp),
+// same as the astro line labels already do, fixes both: zero recompute cost during the drag itself,
+// and the selection only changes when the user actually changes what they're looking at, not
+// mid-motion. cityLabels is the cache; the per-frame render path just reprojects each already-
+// chosen city's lon/lat live (cheap) so labels still track the globe smoothly as it rotates.
+let cityLabels = []; // [{ name, lon, lat, minZoom, left, right, top, bottom }]
+// Cities dropped by the most recent recomputeCityLabels(), still easing out — see the city label
+// block in renderInner for how these get drawn alongside the active set.
+let fadingOutCityLabels = []; // [{ name, lon, lat, fadeOutStartAt }]
 let baseScale = 100;
 
 let astroLines = []; // [{ bodyId, kind, color, feature }]
@@ -199,68 +229,53 @@ function renderInner() {
 
   // City labels — deepest level of map detail, so they only start appearing well into the region
   // border's own fade range and get progressively denser the further in you go, same idea as
-  // Apple Maps/Flighty revealing more place names the deeper you zoom. Each city's reveal zoom is
-  // precomputed at build time from its population (see build-globe-html.mjs) — not with a log10
-  // call here — since this runs every frame, not just at the discrete moments the astro line
-  // labels recompute at; 69,562 cities is enough that per-frame transcendental math on all of
-  // them would be a real cost.
-  //
-  // At deep zoom in a dense region, hundreds of cities can pass the zoom/visibility check in a
-  // single frame — far more than can legibly fit. Candidates are sorted by population (via their
-  // precomputed minZoom, which already encodes it) and then claimed one per grid cell in a coarse
-  // occupancy grid, so bigger cities win any conflict and a hard cap bounds the worst case, rather
-  // than drawing an unreadable, overlapping wall of text.
-  if (zoom > CITY_BASE_MIN_ZOOM) {
+  // Apple Maps/Flighty revealing more place names the deeper you zoom. The expensive part (the
+  // full candidate scan + collision layout) only runs at the end of a gesture — see
+  // recomputeCityLabels and its call site in onPointerUp — so this just reprojects the cached
+  // selection live every frame. fadingOutCityLabels are cities that were showing a moment ago and
+  // just lost their slot (zoomed out past their reveal threshold, rotated off screen, or lost a
+  // collision to a higher-priority neighbor) — drawn here too so they ease out instead of
+  // vanishing the instant a recompute drops them, symmetric with the fade-in below. That list can
+  // be non-empty even once zoom has dropped back to/below CITY_BASE_MIN_ZOOM (a big zoom-out can
+  // drop every city label in one recompute), so the gate below checks both.
+  if (zoom > CITY_BASE_MIN_ZOOM || fadingOutCityLabels.length > 0) {
     ctx.font = '500 10px -apple-system, BlinkMacSystemFont, system-ui, sans-serif';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-
-    const candidates = [];
-    for (const city of CITIES) {
-      const [name, lon, lat, minZoom] = city;
-      if (zoom <= minZoom) continue;
-      // isFrontFacing alone is a hemisphere check, not an "is this actually in view" check — at
-      // any real zoom, that hemisphere covers a huge stretch of the globe (way beyond the visible
-      // canvas), so without also checking the projected point is within the canvas, cities on the
-      // other side of the world could still qualify. Since they're sorted by population next,
-      // major world cities (always front-facing from anywhere, always highest priority) would
-      // then consume the entire CITY_MAX_LABELS budget before a single actually-visible city near
-      // the current view ever got a turn — which is exactly what was happening.
-      if (!isFrontFacing([lon, lat])) continue;
-      const p = projection([lon, lat]);
+    const nowMs = performance.now();
+    // A per-label fade-in that only runs once, the first time that specific city enters the
+    // selection — see recomputeCityLabels, which carries a label's fadeStartAt forward across
+    // recomputes if it was already showing, rather than restamping it fresh every time the
+    // selection refreshes. Always resolves to fully opaque and stays there — nothing here is tied
+    // to the current zoom, so a label never gets stuck part-faded just because the user settled at
+    // some particular zoom level.
+    for (const c of cityLabels) {
+      if (!isFrontFacing([c.lon, c.lat])) continue;
+      const p = projection([c.lon, c.lat]);
       if (!p) continue;
       if (p[0] < 0 || p[0] > width || p[1] < 0 || p[1] > height) continue;
-      candidates.push({ name, x: p[0], y: p[1], minZoom, alpha: clamp((zoom - minZoom) / CITY_FADE_RANGE, 0, 1) });
-    }
-    // Lower minZoom = bigger population (see build-time formula) = higher priority.
-    candidates.sort((a, b) => a.minZoom - b.minZoom);
-
-    // A fixed grid cell doesn't account for actual text width — a long name overlaps its
-    // neighbor regardless of which cell each dot falls in. Real bounding-box collision, checked
-    // in priority order and stopping at a small hard cap, both keeps text from overlapping and
-    // keeps the screen from turning into a wall of labels: only measure/check as many candidates
-    // as it takes to either fill the cap or run out, not the full (possibly huge) candidate list.
-    const placed = [];
-    for (const c of candidates) {
-      if (placed.length >= CITY_MAX_LABELS) break;
-      const textWidth = ctx.measureText(c.name).width;
-      const left = c.x - 3;
-      const right = c.x + 5 + textWidth + 4;
-      const top = c.y - 8;
-      const bottom = c.y + 8;
-      const collides = placed.some((p) => !(right < p.left || left > p.right || bottom < p.top || top > p.bottom));
-      if (collides) continue;
-      placed.push({ ...c, left, right, top, bottom });
-    }
-
-    for (const c of placed) {
-      ctx.globalAlpha = c.alpha;
+      ctx.globalAlpha = Math.min(1, (nowMs - c.fadeStartAt) / LABEL_FADE_MS);
       ctx.beginPath();
-      ctx.arc(c.x, c.y, 1.6, 0, Math.PI * 2);
+      ctx.arc(p[0], p[1], 1.6, 0, Math.PI * 2);
       ctx.fillStyle = THEME.cityDot;
       ctx.fill();
       ctx.fillStyle = THEME.cityLabel;
-      ctx.fillText(c.name, c.x + 5, c.y);
+      ctx.fillText(c.name, p[0] + 5, p[1]);
+    }
+    for (const c of fadingOutCityLabels) {
+      const alpha = 1 - (nowMs - c.fadeOutStartAt) / LABEL_FADE_MS;
+      if (alpha <= 0) continue;
+      if (!isFrontFacing([c.lon, c.lat])) continue;
+      const p = projection([c.lon, c.lat]);
+      if (!p) continue;
+      if (p[0] < 0 || p[0] > width || p[1] < 0 || p[1] > height) continue;
+      ctx.globalAlpha = alpha;
+      ctx.beginPath();
+      ctx.arc(p[0], p[1], 1.6, 0, Math.PI * 2);
+      ctx.fillStyle = THEME.cityDot;
+      ctx.fill();
+      ctx.fillStyle = THEME.cityLabel;
+      ctx.fillText(c.name, p[0] + 5, p[1]);
     }
     ctx.globalAlpha = 1;
     ctx.textAlign = 'center';
@@ -288,22 +303,20 @@ function renderInner() {
   // comment for why), but each label's anchor is re-projected live every frame so it rotates
   // naturally with its line — it stays on the line, just riding along with the globe — rather
   // than sitting frozen at a fixed screen position while the line moves underneath it.
-  if (zoom > MIN_ZOOM) {
+  const labelZoomAlpha = clamp(
+    (zoom - LABEL_ZOOM_FADE_START) / (LABEL_ZOOM_FADE_END - LABEL_ZOOM_FADE_START),
+    0,
+    1
+  );
+  if (labelZoomAlpha > 0) {
     ctx.font = '600 11px -apple-system, BlinkMacSystemFont, system-ui, sans-serif';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
-    ctx.globalAlpha = Math.min(1, (performance.now() - labelsFadeStartAt) / LABEL_FADE_MS);
+    ctx.globalAlpha = Math.min(1, (performance.now() - labelsFadeStartAt) / LABEL_FADE_MS) * labelZoomAlpha;
     for (const label of renderedLabels) {
-      if (!isFrontFacing(label.anchor)) continue;
-      const p = projection(label.anchor);
-      if (!p) continue;
-      const x = p[0] + label.offsetX;
-      const y = p[1] + label.offsetY;
-
-      const left = x - label.width / 2 - LABEL_PADDING_X;
-      const right = x + label.width / 2 + LABEL_PADDING_X;
-      const top = y - LABEL_ASCENT;
-      const bottom = y + LABEL_DESCENT;
+      const box = projectLabelBox(label);
+      if (!box) continue;
+      const { x, y, left, right, top, bottom } = box;
       ctx.beginPath();
       ctx.roundRect(left, top, right - left, bottom - top, (bottom - top) / 2);
       ctx.fillStyle = mixWithWhite(label.color, 0.03);
@@ -378,6 +391,157 @@ function isFrontFacing([lon, lat]) {
   return cosc > 0;
 }
 
+// A line label's current screen-space pill box, re-derived live every frame from its geographic
+// anchor + cached offset (see recomputeLabels) — shared by the draw loop and by tap hit-testing
+// (hitTestLabel) so the two can never disagree about where a label actually is.
+function projectLabelBox(label) {
+  if (!isFrontFacing(label.anchor)) return null;
+  const p = projection(label.anchor);
+  if (!p) return null;
+  const x = p[0] + label.offsetX;
+  const y = p[1] + label.offsetY;
+  return {
+    x,
+    y,
+    left: x - label.width / 2 - LABEL_PADDING_X,
+    right: x + label.width / 2 + LABEL_PADDING_X,
+    top: y - LABEL_ASCENT,
+    bottom: y + LABEL_DESCENT,
+  };
+}
+
+// Hit-testing for taps on a line or its label, used by handleTap. Checked in this order because
+// a label can sit slightly off its own line (the stagger layout nudges it to avoid overlapping
+// neighbors) — testing the label's actual drawn box first means tapping the pill always works,
+// even when it's no longer sitting right on top of the stroke.
+function hitTestLabel(x, y) {
+  if (zoom <= LABEL_ZOOM_FADE_START) return null; // labels aren't drawn at all below this zoom
+  for (const label of renderedLabels) {
+    const box = projectLabelBox(label);
+    if (!box) continue;
+    if (x >= box.left && x <= box.right && y >= box.top && y <= box.bottom) return label;
+  }
+  return null;
+}
+
+// Path2D implements the same moveTo/lineTo/arc subset geoPath draws through, so building one per
+// line lets ctx.isPointInStroke do real hit-testing against the line's actual curved geometry —
+// far more accurate than an approximate screen-space bounding box, and cheap enough since this
+// only runs on an actual tap, not every frame.
+const LINE_HIT_WIDTH = 20; // generous finger-sized tap target, well beyond the ~1.8px visual stroke
+function hitTestLine(x, y) {
+  for (const line of astroLines) {
+    const hitPath = new Path2D();
+    geoPath(projection, hitPath)(line.feature);
+    ctx.lineWidth = LINE_HIT_WIDTH;
+    if (ctx.isPointInStroke(hitPath, x, y)) return line;
+  }
+  return null;
+}
+
+// The expensive part of city labels: scans every city in CITIES for one that's past its reveal
+// zoom and actually on screen, then greedily claims labels in population order under real
+// bounding-box collision, stopping at CITY_MAX_LABELS. Only called at the end of a gesture (see
+// its call site in onPointerUp) rather than run every frame — with 170k+ cities this is real work,
+// and a drag gesture calls render() far more often than once per animation frame.
+//
+// Already-visible cities get first claim on a slot, ahead of any fresh candidate regardless of
+// population — panning slightly or zooming in further shifts everyone's screen position, and
+// without this a label that's already showing could still lose its spot simply because the new
+// layout's collisions shook out differently, which reads as it randomly vanishing even though
+// nothing about its own relevance changed. It only drops out here if it's actually left the
+// visible area or zoom has dropped back below its own reveal threshold — zooming out is the one
+// case where losing labels is expected.
+function recomputeCityLabels() {
+  ctx.font = '500 10px -apple-system, BlinkMacSystemFont, system-ui, sans-serif';
+  const now = performance.now();
+
+  const retained = [];
+  const retainedKeys = new Set();
+  for (const c of cityLabels) {
+    // A plain `zoom <= c.minZoom` check has zero margin — a city whose threshold sits close to
+    // the current zoom can get dropped by a barely-perceptible zoom dip (a finger lifting and
+    // re-touching mid-gesture shifts zoom by a tiny amount without visibly moving anything on
+    // screen), and population tiers are often close enough together that the same tiny dip drops
+    // one city while revealing another right as it happens — reads as random flicker even though
+    // the user didn't consciously zoom out. Once a city is showing, require zoom to fall
+    // meaningfully below its own threshold, not just barely, before that counts as a real
+    // zoom-out.
+    if (zoom <= c.minZoom - CITY_RETAIN_HYSTERESIS) continue;
+    if (!isFrontFacing([c.lon, c.lat])) continue;
+    const p = projection([c.lon, c.lat]);
+    if (!p) continue;
+    if (p[0] < 0 || p[0] > width || p[1] < 0 || p[1] > height) continue;
+    retained.push({ name: c.name, lon: c.lon, lat: c.lat, minZoom: c.minZoom, x: p[0], y: p[1], fadeStartAt: c.fadeStartAt });
+    retainedKeys.add(c.name + '|' + c.lon + '|' + c.lat);
+  }
+  // Lower minZoom = bigger population (see build-time formula) = higher priority.
+  retained.sort((a, b) => a.minZoom - b.minZoom);
+
+  // Fresh candidates — everything else that now qualifies but wasn't already on screen.
+  const candidates = [];
+  for (const city of CITIES) {
+    const [name, lon, lat, minZoom] = city;
+    if (zoom <= minZoom) continue;
+    if (retainedKeys.has(name + '|' + lon + '|' + lat)) continue;
+    // isFrontFacing alone is a hemisphere check, not an "is this actually in view" check — at
+    // any real zoom, that hemisphere covers a huge stretch of the globe (way beyond the visible
+    // canvas), so without also checking the projected point is within the canvas, cities on the
+    // other side of the world could still qualify. Since they're sorted by population next,
+    // major world cities (always front-facing from anywhere, always highest priority) would
+    // then consume the entire CITY_MAX_LABELS budget before a single actually-visible city near
+    // the current view ever got a turn — which is exactly what was happening.
+    if (!isFrontFacing([lon, lat])) continue;
+    const p = projection([lon, lat]);
+    if (!p) continue;
+    if (p[0] < 0 || p[0] > width || p[1] < 0 || p[1] > height) continue;
+    candidates.push({ name, lon, lat, minZoom, x: p[0], y: p[1] });
+  }
+  candidates.sort((a, b) => a.minZoom - b.minZoom);
+
+  // A fixed grid cell doesn't account for actual text width — a long name overlaps its
+  // neighbor regardless of which cell each dot falls in. Real bounding-box collision, checked
+  // in priority order and stopping at a small hard cap, both keeps text from overlapping and
+  // keeps the screen from turning into a wall of labels: only measure/check as many candidates
+  // as it takes to either fill the cap or run out, not the full (possibly huge) candidate list.
+  //
+  // The margins are deliberately generous, not just tight enough to avoid touching — labels only
+  // resettle at the end of a gesture (not live during one, see the comment above this function),
+  // so a label can drift a few pixels from its collision-solved position before the next
+  // recompute catches up. A tight margin let that drift show up as visible overlap in dense
+  // clusters; the fix that actually matches "render fewer labels here" is to require more
+  // clearance in the first place, which drops more candidates in exactly the crowded spots and
+  // leaves sparser areas untouched (nothing there was close enough to collide either way).
+  const placed = [];
+  function tryPlace(c, fadeStartAt) {
+    if (placed.length >= CITY_MAX_LABELS) return;
+    const textWidth = ctx.measureText(c.name).width;
+    const left = c.x - 4;
+    const right = c.x + 5 + textWidth + 10;
+    const top = c.y - 9;
+    const bottom = c.y + 9;
+    const collides = placed.some((p) => !(right < p.left || left > p.right || bottom < p.top || top > p.bottom));
+    if (collides) return;
+    placed.push({ name: c.name, lon: c.lon, lat: c.lat, minZoom: c.minZoom, left, right, top, bottom, fadeStartAt });
+  }
+  for (const c of retained) tryPlace(c, c.fadeStartAt);
+  for (const c of candidates) tryPlace(c, now);
+
+  // Anything that was showing a moment ago but didn't make it into `placed` this round eases out
+  // instead of vanishing outright — see fadingOutCityLabels' declaration and its draw loop in
+  // renderInner. Already-expired entries from a previous drop are pruned here rather than reset,
+  // so an unrelated drop elsewhere doesn't restart a fade that's already most of the way through.
+  const placedKeys = new Set(placed.map((c) => c.name + '|' + c.lon + '|' + c.lat));
+  const freshlyDropped = cityLabels
+    .filter((c) => !placedKeys.has(c.name + '|' + c.lon + '|' + c.lat))
+    .map((c) => ({ name: c.name, lon: c.lon, lat: c.lat, fadeOutStartAt: now }));
+  fadingOutCityLabels = fadingOutCityLabels
+    .filter((c) => now - c.fadeOutStartAt < LABEL_FADE_MS)
+    .concat(freshlyDropped);
+
+  cityLabels = placed;
+}
+
 // Greedily nudges each label upward past any already-placed label its bounding box would
 // overlap, so a cluster of lines crossing the equator nearby doesn't render as illegible mush.
 // Places each label as close as possible to its true anchor without overlapping an
@@ -424,6 +588,7 @@ function layoutLabels(candidates) {
     results.push({
       x: found.x,
       y: found.y,
+      bodyId: c.bodyId,
       glyph: c.glyph,
       kind: c.kind,
       glyphWidth: c.glyphWidth,
@@ -566,6 +731,7 @@ function recomputeLabels() {
     const labelWidth = glyphMetrics.width + GLYPH_KIND_GAP + kindMetrics.width;
     candidates.push({
       anchor,
+      bodyId: line.bodyId,
       x: p[0],
       y: p[1],
       glyph,
@@ -590,6 +756,7 @@ function recomputeLabels() {
     .map((label, i) =>
       label && {
         anchor: candidates[i].anchor,
+        bodyId: label.bodyId,
         offsetX: label.x - candidates[i].x,
         offsetY: label.y - candidates[i].y,
         glyph: label.glyph,
@@ -613,9 +780,14 @@ function tick(now) {
   if (idle) {
     rotation[0] += AUTO_ROTATE_DEG_PER_MS * dt;
   }
-  // Keep rendering through an in-progress label fade even when otherwise idle-still, so the
-  // animation actually plays instead of jumping straight to full opacity on the next redraw.
-  const fading = now - labelsFadeStartAt < LABEL_FADE_MS;
+  // Keep rendering through an in-progress label fade (in or out) even when otherwise idle-still,
+  // so the animation actually plays instead of snapping straight to its end state on the next
+  // redraw — matters most for city labels, since a fade starts right at gesture end, when nothing
+  // else is left to keep triggering renders.
+  const cityFading =
+    cityLabels.some((c) => now - c.fadeStartAt < LABEL_FADE_MS) ||
+    fadingOutCityLabels.some((c) => now - c.fadeOutStartAt < LABEL_FADE_MS);
+  const fading = now - labelsFadeStartAt < LABEL_FADE_MS || cityFading;
   if (idle || fading) {
     render();
   }
@@ -706,6 +878,7 @@ function onPointerUp(e) {
   // refresh them to match wherever the user ended up.
   if (pointers.size === 0) {
     recomputeLabels();
+    recomputeCityLabels();
     render();
   }
 }
@@ -715,6 +888,17 @@ function clamp(value, min, max) {
 }
 
 function handleTap(x, y) {
+  const hitLabel = hitTestLabel(x, y);
+  if (hitLabel) {
+    postToRN({ type: 'lineTap', bodyId: hitLabel.bodyId, kind: hitLabel.kind });
+    return;
+  }
+  const hitLine = hitTestLine(x, y);
+  if (hitLine) {
+    postToRN({ type: 'lineTap', bodyId: hitLine.bodyId, kind: hitLine.kind });
+    return;
+  }
+
   const lonLat = projection.invert([x, y]);
   if (!lonLat) return;
   const roundTrip = projection(lonLat);

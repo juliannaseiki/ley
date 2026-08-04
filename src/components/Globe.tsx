@@ -2,17 +2,21 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import WebView, { WebViewMessageEvent } from 'react-native-webview';
 import { GLOBE_HTML } from '../webview/globeHtml';
-import { AstroLine } from '../lib/astro/types';
+import { AstroLine, BodyId, LineKind } from '../lib/astro/types';
 
-type WebViewOutMessage = { type: 'ready' } | { type: 'tap'; lon: number; lat: number };
+type WebViewOutMessage =
+  | { type: 'ready' }
+  | { type: 'tap'; lon: number; lat: number }
+  | { type: 'lineTap'; bodyId: BodyId; kind: LineKind };
 
 type Props = {
   lines: AstroLine[];
   pinLocation: { lat: number; lon: number } | null;
   onTapLocation: (lat: number, lon: number) => void;
+  onTapLine: (bodyId: BodyId, kind: LineKind) => void;
 };
 
-export function Globe({ lines, pinLocation, onTapLocation }: Props) {
+export function Globe({ lines, pinLocation, onTapLocation, onTapLine }: Props) {
   const webviewRef = useRef<WebView>(null);
   const [ready, setReady] = useState(false);
 
@@ -51,6 +55,8 @@ export function Globe({ lines, pinLocation, onTapLocation }: Props) {
       setReady(true);
     } else if (message.type === 'tap') {
       onTapLocation(message.lat, message.lon);
+    } else if (message.type === 'lineTap') {
+      onTapLine(message.bodyId, message.kind);
     }
   };
 
