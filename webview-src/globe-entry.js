@@ -1,8 +1,8 @@
 import { geoOrthographic, geoPath } from 'd3-geo';
 
-// LAND_GEOJSON, BORDER_GEOJSON, REGION_BORDER_GEOJSON, CITIES, and THEME are injected as globals
-// by the HTML wrapper at build time.
-/* global LAND_GEOJSON, BORDER_GEOJSON, REGION_BORDER_GEOJSON, CITIES, THEME */
+// LAND_GEOJSON, BORDER_GEOJSON, REGION_BORDER_GEOJSON, ELEVATION_BAND_GEOJSON, CITIES, and THEME
+// are injected as globals by the HTML wrapper at build time.
+/* global LAND_GEOJSON, BORDER_GEOJSON, REGION_BORDER_GEOJSON, ELEVATION_BAND_GEOJSON, CITIES, THEME */
 
 const canvas = document.getElementById('globe');
 const ctx = canvas.getContext('2d');
@@ -137,7 +137,11 @@ function renderInner() {
   ctx.fillStyle = oceanGradient;
   ctx.fill();
 
-  // Land.
+  // Land — a flat base fill first, then flat elevation-tinted bands on top. The bands come from a
+  // different source (a downsampled elevation grid) than the coastline outline (a vector
+  // dataset), so they don't align pixel-perfectly; drawing the plain land fill underneath first
+  // means any sliver gap at the coast reveals that same land tone instead of the white ocean,
+  // rather than a visible seam.
   ctx.beginPath();
   path(LAND_GEOJSON);
   ctx.fillStyle = THEME.land;
@@ -145,6 +149,13 @@ function renderInner() {
   ctx.lineWidth = 0.8;
   ctx.strokeStyle = THEME.landStroke;
   ctx.stroke();
+
+  for (const bandFeature of ELEVATION_BAND_GEOJSON.features) {
+    ctx.beginPath();
+    path(bandFeature);
+    ctx.fillStyle = bandFeature.properties.color;
+    ctx.fill();
+  }
 
   // State/province borders for every country, drawn under country borders (so the country
   // outline reads as the more prominent line) and only faded in once zoomed in a bit — at full

@@ -61,6 +61,39 @@ const cities = JSON.parse(fs.readFileSync(path.join(root, 'scripts/data/cities.j
   ([name, lon, lat, population]) => [name, lon, lat, minZoomForPopulation(population)]
 );
 
+// Flat, pastel elevation-tinted terrain (land only — ocean keeps its existing plain fill). No
+// npm package or Natural Earth vector product ships classified elevation polygons directly, so
+// this is our own conversion: NOAA's ETOPO1 global relief grid (1 arc-minute, ice-surface,
+// grid-registered - https://www.ngdc.noaa.gov/mgg/global/relief/ETOPO1/data/ice_surface/
+// grid_registered/netcdf/ETOPO1_Ice_g_gmt4.grd.gz), downsampled to 0.1deg with gdal_translate,
+// then polygonized into fixed elevation bands with gdal_contour -p (one flat-fillable polygon per
+// band, not a raster/hillshade — matches the "flat colors, no shading" ask directly since there's
+// nothing to shade), then simplified 3% and quantized to topojson via mapshaper, same as
+// admin1-provinces:
+//   gdal_translate -outsize 3600 1800 -r average ETOPO1_Ice_g_gmt4.grd etopo1_0.1deg.tif
+//   gdal_contour -p -amin elevmin -amax elevmax \
+//     -fl -11000 -4000 -200 0 200 500 1000 2000 4000 9000 \
+//     -f GeoJSON etopo1_0.1deg.tif elevation_bands.geojson
+//   npx mapshaper -i elevation_bands.geojson -simplify 3% \
+//     -o format=topojson quantization=1e5 elevation-bands.json
+const ELEVATION_BAND_COLORS = {
+  0: '#DFEED4', // 0-200m: lowlands/coastal plains
+  200: '#E9E8C6', // 200-500m: hills/plains
+  500: '#EEDFB8', // 500-1000m: uplands
+  1000: '#EACDA6', // 1000-2000m: low mountains
+  2000: '#DAB68F', // 2000-4000m: mountains
+  4000: '#E3DED8', // 4000m+: high peaks
+};
+const elevationTopology = JSON.parse(
+  fs.readFileSync(path.join(root, 'scripts/data/elevation-bands.json'), 'utf8')
+);
+const elevationBandGeoJson = {
+  type: 'FeatureCollection',
+  features: feature(elevationTopology, elevationTopology.objects.elevation_bands)
+    .features.filter((f) => f.properties.elevmin >= 0)
+    .map((f) => ({ ...f, properties: { color: ELEVATION_BAND_COLORS[f.properties.elevmin] } })),
+};
+
 const theme = {
   oceanLight: '#FFFFFF',
   oceanDeep: '#FFFFFF',
@@ -100,6 +133,7 @@ const html = `<!DOCTYPE html>
 window.LAND_GEOJSON = ${JSON.stringify(landGeoJson)};
 window.BORDER_GEOJSON = ${JSON.stringify(borderGeoJson)};
 window.REGION_BORDER_GEOJSON = ${JSON.stringify(regionBorderGeoJson)};
+window.ELEVATION_BAND_GEOJSON = ${JSON.stringify(elevationBandGeoJson)};
 window.CITIES = ${JSON.stringify(cities)};
 window.THEME = ${JSON.stringify(theme)};
 </script>
