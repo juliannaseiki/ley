@@ -77,12 +77,12 @@ const cities = JSON.parse(fs.readFileSync(path.join(root, 'scripts/data/cities.j
 //   npx mapshaper -i elevation_bands.geojson -simplify 3% \
 //     -o format=topojson quantization=1e5 elevation-bands.json
 const ELEVATION_BAND_COLORS = {
-  0: '#DFEED4', // 0-200m: lowlands/coastal plains
-  200: '#E9E8C6', // 200-500m: hills/plains
-  500: '#EEDFB8', // 500-1000m: uplands
-  1000: '#EACDA6', // 1000-2000m: low mountains
-  2000: '#DAB68F', // 2000-4000m: mountains
-  4000: '#E3DED8', // 4000m+: high peaks
+  0: '#F1F5EE', // 0-200m: lowlands/coastal plains
+  200: '#EDF2E9', // 200-500m: hills/plains
+  500: '#E9EFE3', // 500-1000m: uplands
+  1000: '#E5ECDE', // 1000-2000m: low mountains
+  2000: '#E1E9D8', // 2000-4000m: mountains
+  4000: '#DDE6D3', // 4000m+: high peaks
 };
 const elevationTopology = JSON.parse(
   fs.readFileSync(path.join(root, 'scripts/data/elevation-bands.json'), 'utf8')
