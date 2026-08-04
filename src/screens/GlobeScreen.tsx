@@ -5,7 +5,7 @@ import { Globe } from '../components/Globe';
 import { RelocatedChartPanel } from '../components/RelocatedChartPanel';
 import { useAuth } from '../context/AuthContext';
 import { computeAstroLines, computeHouseChart, computeNatalChart } from '../lib/astro';
-import { HouseChart } from '../lib/astro/types';
+import { BodyId, HouseChart, LineKind } from '../lib/astro/types';
 import { BirthData } from '../types/birthData';
 import { colors, fonts, spacing } from '../theme';
 
@@ -14,19 +14,27 @@ export function GlobeScreen({ birthData }: { birthData: BirthData }) {
   const [houseChart, setHouseChart] = useState<HouseChart | null>(null);
   const [panelVisible, setPanelVisible] = useState(false);
   const [pinLocation, setPinLocation] = useState<{ lat: number; lon: number } | null>(null);
+  const [selectedLine, setSelectedLine] = useState<{ bodyId: BodyId; kind: LineKind } | null>(null);
 
   const natalChart = useMemo(() => computeNatalChart(new Date(birthData.birthUtc)), [birthData.birthUtc]);
   const astroLines = useMemo(() => computeAstroLines(natalChart), [natalChart]);
 
   const handleTapLocation = (lat: number, lon: number) => {
+    setSelectedLine(null);
     setHouseChart(computeHouseChart(natalChart, lat, lon));
     setPinLocation({ lat, lon });
+    setPanelVisible(true);
+  };
+
+  const handleTapLine = (bodyId: BodyId, kind: LineKind) => {
+    setSelectedLine({ bodyId, kind });
     setPanelVisible(true);
   };
 
   const handleClosePanel = () => {
     setPanelVisible(false);
     setPinLocation(null);
+    setSelectedLine(null);
   };
 
   return (
@@ -40,13 +48,19 @@ export function GlobeScreen({ birthData }: { birthData: BirthData }) {
         </View>
       </SafeAreaView>
 
-      <Globe lines={astroLines} pinLocation={pinLocation} onTapLocation={handleTapLocation} />
+      <Globe
+        lines={astroLines}
+        pinLocation={pinLocation}
+        onTapLocation={handleTapLocation}
+        onTapLine={handleTapLine}
+      />
 
       <RelocatedChartPanel
         visible={panelVisible}
         onClose={handleClosePanel}
         natalChart={natalChart}
         houseChart={houseChart}
+        selectedLine={selectedLine}
       />
     </View>
   );

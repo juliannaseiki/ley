@@ -302,16 +302,9 @@ function renderInner() {
     ctx.textBaseline = 'alphabetic';
     ctx.globalAlpha = Math.min(1, (performance.now() - labelsFadeStartAt) / LABEL_FADE_MS);
     for (const label of renderedLabels) {
-      if (!isFrontFacing(label.anchor)) continue;
-      const p = projection(label.anchor);
-      if (!p) continue;
-      const x = p[0] + label.offsetX;
-      const y = p[1] + label.offsetY;
-
-      const left = x - label.width / 2 - LABEL_PADDING_X;
-      const right = x + label.width / 2 + LABEL_PADDING_X;
-      const top = y - LABEL_ASCENT;
-      const bottom = y + LABEL_DESCENT;
+      const box = projectLabelBox(label);
+      if (!box) continue;
+      const { x, y, left, right, top, bottom } = box;
       ctx.beginPath();
       ctx.roundRect(left, top, right - left, bottom - top, (bottom - top) / 2);
       ctx.fillStyle = mixWithWhite(label.color, 0.03);
@@ -384,6 +377,54 @@ function isFrontFacing([lon, lat]) {
   const phi = lat * toRad;
   const cosc = Math.sin(phi0) * Math.sin(phi) + Math.cos(phi0) * Math.cos(phi) * Math.cos(lambda - lambda0);
   return cosc > 0;
+}
+
+// A line label's current screen-space pill box, re-derived live every frame from its geographic
+// anchor + cached offset (see recomputeLabels) — shared by the draw loop and by tap hit-testing
+// (hitTestLabel) so the two can never disagree about where a label actually is.
+function projectLabelBox(label) {
+  if (!isFrontFacing(label.anchor)) return null;
+  const p = projection(label.anchor);
+  if (!p) return null;
+  const x = p[0] + label.offsetX;
+  const y = p[1] + label.offsetY;
+  return {
+    x,
+    y,
+    left: x - label.width / 2 - LABEL_PADDING_X,
+    right: x + label.width / 2 + LABEL_PADDING_X,
+    top: y - LABEL_ASCENT,
+    bottom: y + LABEL_DESCENT,
+  };
+}
+
+// Hit-testing for taps on a line or its label, used by handleTap. Checked in this order because
+// a label can sit slightly off its own line (the stagger layout nudges it to avoid overlapping
+// neighbors) — testing the label's actual drawn box first means tapping the pill always works,
+// even when it's no longer sitting right on top of the stroke.
+function hitTestLabel(x, y) {
+  if (zoom <= MIN_ZOOM) return null; // labels aren't drawn at all below this zoom
+  for (const label of renderedLabels) {
+    const box = projectLabelBox(label);
+    if (!box) continue;
+    if (x >= box.left && x <= box.right && y >= box.top && y <= box.bottom) return label;
+  }
+  return null;
+}
+
+// Path2D implements the same moveTo/lineTo/arc subset geoPath draws through, so building one per
+// line lets ctx.isPointInStroke do real hit-testing against the line's actual curved geometry —
+// far more accurate than an approximate screen-space bounding box, and cheap enough since this
+// only runs on an actual tap, not every frame.
+const LINE_HIT_WIDTH = 20; // generous finger-sized tap target, well beyond the ~1.8px visual stroke
+function hitTestLine(x, y) {
+  for (const line of astroLines) {
+    const hitPath = new Path2D();
+    geoPath(projection, hitPath)(line.feature);
+    ctx.lineWidth = LINE_HIT_WIDTH;
+    if (ctx.isPointInStroke(hitPath, x, y)) return line;
+  }
+  return null;
 }
 
 // The expensive part of city labels: scans every city in CITIES for one that's past its reveal
@@ -535,6 +576,7 @@ function layoutLabels(candidates) {
     results.push({
       x: found.x,
       y: found.y,
+      bodyId: c.bodyId,
       glyph: c.glyph,
       kind: c.kind,
       glyphWidth: c.glyphWidth,
@@ -677,6 +719,7 @@ function recomputeLabels() {
     const labelWidth = glyphMetrics.width + GLYPH_KIND_GAP + kindMetrics.width;
     candidates.push({
       anchor,
+      bodyId: line.bodyId,
       x: p[0],
       y: p[1],
       glyph,
@@ -701,6 +744,7 @@ function recomputeLabels() {
     .map((label, i) =>
       label && {
         anchor: candidates[i].anchor,
+        bodyId: label.bodyId,
         offsetX: label.x - candidates[i].x,
         offsetY: label.y - candidates[i].y,
         glyph: label.glyph,
@@ -832,6 +876,17 @@ function clamp(value, min, max) {
 }
 
 function handleTap(x, y) {
+  const hitLabel = hitTestLabel(x, y);
+  if (hitLabel) {
+    postToRN({ type: 'lineTap', bodyId: hitLabel.bodyId, kind: hitLabel.kind });
+    return;
+  }
+  const hitLine = hitTestLine(x, y);
+  if (hitLine) {
+    postToRN({ type: 'lineTap', bodyId: hitLine.bodyId, kind: hitLine.kind });
+    return;
+  }
+
   const lonLat = projection.invert([x, y]);
   if (!lonLat) return;
   const roundTrip = projection(lonLat);
