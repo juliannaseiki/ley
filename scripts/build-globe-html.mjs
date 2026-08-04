@@ -95,13 +95,88 @@ const elevationBandGeoJson = {
     .map((f) => ({ ...f, properties: { color: ELEVATION_BAND_COLORS[f.properties.elevmin] } })),
 };
 
+// Inland water — lakes and other bodies of water, filled the same white as the ocean so they
+// read as "water" rather than land-colored gaps. world-atlas's land layer doesn't carve lakes
+// out as holes at all (too coarse a resolution to bother), so this is its own source: Natural
+// Earth, fetched from https://github.com/nvkelso/natural-earth-vector.
+//
+// Two tiers, same idea as region borders/cities — a coarse layer that's always drawn, and a
+// finer layer that only costs anything once zoomed in:
+//   - lakesMajorGeoJson: ne_50m_lakes (~400 of the largest lakes worldwide), simplified 5%.
+//     Matches the ~110m resolution of the land/ocean/border layers it's drawn alongside every
+//     frame, including through continuous idle auto-rotation — cheap by design, not just by luck.
+//   - lakesDetailGeoJson: ne_10m_lakes (~1,350 lakes — covers regionally-notable ones the 50m
+//     tier misses, e.g. Lake Champlain), simplified 8%, faded in over the same zoom range as
+//     region borders (reusing REGION_BORDER_FADE_START/END in the renderer, not a separate
+//     constant) so its cost only applies once actually zoomed in, rather than every frame forever
+//     at rest. Drawing the full 10m set unconditionally made the globe painfully slow — a
+//     resolution that fine has no business being an always-on layer.
+//
+// keep-shapes matters here in a way it didn't for the coastline/border layers: without it, most
+// lakes are small enough relative to the whole dataset that simplification collapsed them to
+// nothing — 285 of 412 "major" lakes (Tahoe, the Dead Sea, Salton Sea included) came out with
+// null geometry at a plain 5% simplify, silently dropped rather than just less detailed.
+//   npx mapshaper -i ne_50m_lakes.geojson -simplify 5% keep-shapes -filter-fields name \
+//     -o format=topojson quantization=1e5 lakes-major.json
+//   npx mapshaper -i ne_10m_lakes.geojson -simplify 8% keep-shapes -filter-fields name \
+//     -o format=topojson quantization=1e5 lakes-detail.json
+//
+// d3-geo's polygon clipping (used here via clipAngle for the orthographic projection) uses ring
+// winding to decide which side of a clipped edge is "inside"; get it backwards and a lake can
+// clip to its complement instead — the entire visible hemisphere renders in the lake's fill
+// color. Confirmed empirically against d3-geo directly (not just by re-deriving the same formula
+// used to "fix" it, which is tautological): d3-geo wants the exterior ring wound CLOCKWISE under
+// a planar shoelace formula with x=longitude, y=latitude — the opposite of what GeoJSON/RFC 7946
+// states, and the opposite of an earlier version of this fix, which flipped the (correct, as it
+// turns out) majority of rings and broke them. Rewinding here, right before injection, is
+// deliberate: mapshaper normalizes ring order to its own convention when it builds the topology,
+// so fixing the source .geojson before that step doesn't stick — this has to be the last
+// operation before the data reaches the renderer.
+function ringSignedArea(ring) {
+  let sum = 0;
+  for (let i = 0; i < ring.length - 1; i++) {
+    const [x1, y1] = ring[i];
+    const [x2, y2] = ring[i + 1];
+    sum += x1 * y2 - x2 * y1;
+  }
+  return sum / 2;
+}
+function rewindPolygonCoords(coords) {
+  coords.forEach((ring, i) => {
+    const shouldBeClockwise = i === 0; // exterior ring first, holes after
+    const isClockwise = ringSignedArea(ring) < 0;
+    if (isClockwise !== shouldBeClockwise) ring.reverse();
+  });
+}
+function rewindGeometry(geometry) {
+  if (!geometry) return;
+  if (geometry.type === 'Polygon') rewindPolygonCoords(geometry.coordinates);
+  else if (geometry.type === 'MultiPolygon') geometry.coordinates.forEach(rewindPolygonCoords);
+}
+function loadLakes(fileName, objectKey) {
+  const topology = JSON.parse(fs.readFileSync(path.join(root, 'scripts/data', fileName), 'utf8'));
+  const geoJson = feature(topology, topology.objects[objectKey]);
+  geoJson.features = geoJson.features.filter((f) => f.geometry);
+  geoJson.features.forEach((f) => rewindGeometry(f.geometry));
+  return geoJson;
+}
+
+const lakesMajorGeoJson = loadLakes('lakes-major.json', 'ne_50m_lakes');
+const lakesMajorNames = new Set(lakesMajorGeoJson.features.map((f) => f.properties.name));
+// Excludes anything already covered by the major tier — both are the same flat white, so a
+// duplicate lake costs real render time for zero visual difference.
+const lakesDetailGeoJson = loadLakes('lakes-detail.json', 'ne_10m_lakes');
+lakesDetailGeoJson.features = lakesDetailGeoJson.features.filter(
+  (f) => !lakesMajorNames.has(f.properties.name)
+);
+
 const theme = {
   oceanLight: '#FFFFFF',
   oceanDeep: '#FFFFFF',
   land: '#F4FAF2',
   landStroke: '#DCEEDA',
-  countryBorder: '#CBE4CC',
-  regionBorder: '#DCEEDA',
+  countryBorder: '#7FAE87',
+  regionBorder: '#AACDAF',
   globeOutline: '#EAF3FA',
   pin: '#28312C',
   cityDot: '#8FA396',
@@ -135,6 +210,8 @@ window.LAND_GEOJSON = ${JSON.stringify(landGeoJson)};
 window.BORDER_GEOJSON = ${JSON.stringify(borderGeoJson)};
 window.REGION_BORDER_GEOJSON = ${JSON.stringify(regionBorderGeoJson)};
 window.ELEVATION_BAND_GEOJSON = ${JSON.stringify(elevationBandGeoJson)};
+window.LAKES_MAJOR_GEOJSON = ${JSON.stringify(lakesMajorGeoJson)};
+window.LAKES_DETAIL_GEOJSON = ${JSON.stringify(lakesDetailGeoJson)};
 window.CITIES = ${JSON.stringify(cities)};
 window.THEME = ${JSON.stringify(theme)};
 </script>

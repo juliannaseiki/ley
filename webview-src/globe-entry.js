@@ -1,8 +1,9 @@
 import { geoOrthographic, geoPath } from 'd3-geo';
 
-// LAND_GEOJSON, BORDER_GEOJSON, REGION_BORDER_GEOJSON, ELEVATION_BAND_GEOJSON, CITIES, and THEME
-// are injected as globals by the HTML wrapper at build time.
-/* global LAND_GEOJSON, BORDER_GEOJSON, REGION_BORDER_GEOJSON, ELEVATION_BAND_GEOJSON, CITIES, THEME */
+// LAND_GEOJSON, BORDER_GEOJSON, REGION_BORDER_GEOJSON, ELEVATION_BAND_GEOJSON,
+// LAKES_MAJOR_GEOJSON, LAKES_DETAIL_GEOJSON, CITIES, and THEME are injected as globals by the
+// HTML wrapper at build time.
+/* global LAND_GEOJSON, BORDER_GEOJSON, REGION_BORDER_GEOJSON, ELEVATION_BAND_GEOJSON, LAKES_MAJOR_GEOJSON, LAKES_DETAIL_GEOJSON, CITIES, THEME */
 
 const canvas = document.getElementById('globe');
 const ctx = canvas.getContext('2d');
@@ -202,6 +203,35 @@ function renderInner() {
       ctx.fillStyle = bandFeature.properties.color;
       ctx.fill();
     }
+    ctx.globalAlpha = 1;
+  }
+
+  // Lakes and other inland water — filled with the exact same gradient as the ocean (rather than
+  // a separate flat white) so they read as one continuous idea of "water" instead of two
+  // similar-but-not-quite-identical whites. Drawn after the elevation bands so lakes cut cleanly
+  // through the terrain tint rather than showing a tinted lake bed underneath.
+  //
+  // Two tiers, same idea as region borders/cities: LAKES_MAJOR_GEOJSON (the ~400 largest lakes
+  // worldwide, at land's own coarse resolution) draws every frame unconditionally, including
+  // through continuous idle auto-rotation — cheap by design. LAKES_DETAIL_GEOJSON (~1,350 lakes,
+  // covers regionally-notable ones the major tier misses) is 10x finer and only fades in once
+  // zoomed in, so that cost is never paid at rest.
+  ctx.beginPath();
+  path(LAKES_MAJOR_GEOJSON);
+  ctx.fillStyle = oceanGradient;
+  ctx.fill();
+
+  const lakeDetailAlpha = clamp(
+    (zoom - REGION_BORDER_FADE_START) / (REGION_BORDER_FADE_END - REGION_BORDER_FADE_START),
+    0,
+    1
+  );
+  if (lakeDetailAlpha > 0) {
+    ctx.globalAlpha = lakeDetailAlpha;
+    ctx.beginPath();
+    path(LAKES_DETAIL_GEOJSON);
+    ctx.fillStyle = oceanGradient;
+    ctx.fill();
     ctx.globalAlpha = 1;
   }
 
