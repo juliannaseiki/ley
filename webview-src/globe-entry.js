@@ -28,11 +28,14 @@ const REGION_BORDER_FADE_START = 1.4;
 const REGION_BORDER_FADE_END = 2.2;
 // Line labels used to appear the instant zoom exceeded MIN_ZOOM at all — with up to 40 of them
 // (10 bodies x 4 angles) all converging toward the poles, that meant a screenful of overlapping
-// pills the moment a pinch even started. Gating on a real threshold, faded in like region
-// borders, keeps the view calm until the user has actually zoomed in enough for individual lines
-// to have spread apart on screen.
-const LABEL_ZOOM_FADE_START = 1.8;
-const LABEL_ZOOM_FADE_END = 2.4;
+// pills the moment a pinch even started. This is a hard cutoff, not a zoom-tied fade like region
+// borders — recomputeLabels only runs at discrete moments (gesture end, new line data), not
+// continuously as zoom changes, so a fade driven by the zoom value itself gets permanently stuck
+// at whatever fraction the user's current (static) zoom happens to land on, the same bug already
+// hit and fixed for city labels. The actual fade-in comes from labelsFadeStartAt (time-based,
+// always resolves to fully opaque) — this constant only decides whether labels are eligible to
+// draw at all.
+const LABEL_MIN_ZOOM = 1.8;
 // Elevation tint starts fading in a touch before region borders, so the globe reads as flat and
 // simple at rest and gradually reveals terrain as the very first thing zooming in uncovers, ahead
 // of the border/city layers of detail.
@@ -303,16 +306,11 @@ function renderInner() {
   // comment for why), but each label's anchor is re-projected live every frame so it rotates
   // naturally with its line — it stays on the line, just riding along with the globe — rather
   // than sitting frozen at a fixed screen position while the line moves underneath it.
-  const labelZoomAlpha = clamp(
-    (zoom - LABEL_ZOOM_FADE_START) / (LABEL_ZOOM_FADE_END - LABEL_ZOOM_FADE_START),
-    0,
-    1
-  );
-  if (labelZoomAlpha > 0) {
+  if (zoom > LABEL_MIN_ZOOM) {
     ctx.font = '600 11px -apple-system, BlinkMacSystemFont, system-ui, sans-serif';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
-    ctx.globalAlpha = Math.min(1, (performance.now() - labelsFadeStartAt) / LABEL_FADE_MS) * labelZoomAlpha;
+    ctx.globalAlpha = Math.min(1, (performance.now() - labelsFadeStartAt) / LABEL_FADE_MS);
     for (const label of renderedLabels) {
       const box = projectLabelBox(label);
       if (!box) continue;
@@ -415,7 +413,7 @@ function projectLabelBox(label) {
 // neighbors) — testing the label's actual drawn box first means tapping the pill always works,
 // even when it's no longer sitting right on top of the stroke.
 function hitTestLabel(x, y) {
-  if (zoom <= LABEL_ZOOM_FADE_START) return null; // labels aren't drawn at all below this zoom
+  if (zoom <= LABEL_MIN_ZOOM) return null; // labels aren't drawn at all below this zoom
   for (const label of renderedLabels) {
     const box = projectLabelBox(label);
     if (!box) continue;
