@@ -4,7 +4,8 @@
 // Keeping this as a generated file (rather than loading assets at runtime)
 // sidesteps WebView local-asset path quirks on Android/iOS entirely.
 import { build } from 'esbuild';
-import { feature, mesh } from 'topojson-client';
+import { feature, mesh, merge } from 'topojson-client';
+import { geoArea, geoCentroid } from 'd3-geo';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -12,29 +13,246 @@ import fs from 'node:fs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
 
-const landTopology = JSON.parse(
-  fs.readFileSync(path.join(root, 'node_modules/world-atlas/land-110m.json'), 'utf8')
-);
-const landGeoJson = feature(landTopology, landTopology.objects.land);
+// d3-geo's polygon clipping (used here via clipAngle for the orthographic projection) uses ring
+// winding to decide which side of a clipped edge is "inside"; get it backwards and a shape can
+// clip to its complement instead — the entire visible hemisphere renders in that shape's fill
+// color (or, for geoArea/geoCentroid, computes the area/centroid of the complement instead of the
+// actual shape — same underlying issue, different symptom, found while computing region label
+// placement). Confirmed empirically against d3-geo directly (not just by re-deriving the same
+// formula used to "fix" it, which is tautological — see the lakes bug this was first found for):
+// d3-geo wants a ring wound so that its OWN enclosed area is the smaller of the two complementary
+// regions on the sphere — i.e. under 2π steradians (half the sphere) — not the larger one.
+//
+// An earlier version of this detected orientation via a planar shoelace formula on raw lon/lat
+// coordinates (clockwise = correct). That works for any normally-sized ring, but breaks down for
+// a ring whose true area is near zero — degenerate slivers left over from simplifying a tiny
+// island down to a handful of points. The shoelace sum for a near-zero-area ring is itself near
+// zero, and floating-point noise in that computation can land on either side of zero regardless
+// of the ring's actual (correct or incorrect) orientation, silently flipping already-correct tiny
+// rings into broken ones. Testing with geoArea directly — is this ring's own enclosed area more or
+// less than half the sphere — doesn't have that failure mode: a genuinely near-zero-area ring
+// reports a near-zero area either way and never gets flipped, while a ring that's actually wound
+// backwards reliably reports close to 4π and gets corrected.
+//
+// Rewinding here, right before injection, is deliberate: mapshaper normalizes ring order to its
+// own convention when it builds the topology, so fixing the source .geojson before that step
+// doesn't stick — this has to be the last operation before the data reaches the renderer. Applies
+// separately to merge() output too, not just feature() output — merge resolves to real coordinate
+// rings same as feature() does, but starting from raw (unwound) topology geometries, so merging
+// already-rewound features doesn't carry the fix through; the merged result needs its own pass.
+function ringNeedsReversal(ring) {
+  const area = Math.abs(geoArea({ type: 'Polygon', coordinates: [ring] }));
+  return area > 2 * Math.PI;
+}
+function rewindPolygonCoords(coords) {
+  coords.forEach((ring) => {
+    if (ringNeedsReversal(ring)) ring.reverse();
+  });
+}
+function rewindGeometry(geometry) {
+  if (!geometry) return;
+  if (geometry.type === 'Polygon') rewindPolygonCoords(geometry.coordinates);
+  else if (geometry.type === 'MultiPolygon') geometry.coordinates.forEach(rewindPolygonCoords);
+}
 
-const countriesTopology = JSON.parse(
-  fs.readFileSync(path.join(root, 'node_modules/world-atlas/countries-110m.json'), 'utf8')
-);
-const borderGeoJson = mesh(countriesTopology, countriesTopology.objects.countries, (a, b) => a !== b);
+// Land and country borders, two tiers, same idea as lakes/region borders/cities — a coarse layer
+// that's always drawn, and a finer layer that only costs anything once zoomed in. world-atlas's
+// land-110m/countries-110m (the previous source) don't carve out anything smaller than a large
+// island, so plenty of real places — many Greek islands among them — were simply missing from
+// the map entirely, not just under-detailed. Natural Earth's ne_10m_admin_0_countries is both the
+// land shape (via topojson-client's merge, unioning every country into one fillable shape) and
+// the country border lines (via mesh) from a single higher-resolution source, so the coastline
+// and the border along it can't disagree the way two independently-sourced layers could.
+//
+// -explode matters here for the same reason it does for the admin-1 regions below: keep-shapes
+// only protects whole FEATURES from disappearing during simplification, not individual rings
+// within one feature's MultiPolygon. Greece is a single feature with 74 disjoint landmasses
+// (mainland + islands) in the raw data; without exploding each into its own feature first, a
+// plain "-simplify keep-shapes" collapsed that down to 3, keep-shapes having done its job only
+// for the handful of pieces mapshaper considered significant enough to bother protecting.
+//   npx mapshaper -i ne_10m_admin_0_countries.geojson -explode -simplify 2% keep-shapes \
+//     -filter-fields ADMIN -rename-fields name=ADMIN \
+//     -o format=topojson quantization=1e5 countries-coarse.json
+//   npx mapshaper -i ne_10m_admin_0_countries.geojson -explode -simplify 15% keep-shapes \
+//     -filter-fields ADMIN -rename-fields name=ADMIN \
+//     -o format=topojson quantization=1e5 countries-detail.json
+//
+// mesh()'s adjacency filter normally compares geometry objects by reference — fine when every
+// feature is one country, but after exploding, a country's own separate island pieces are
+// distinct objects too, and a naive `(a, b) => a !== b` would draw a spurious border line
+// wherever two pieces of the *same* country happen to touch. Comparing by name instead treats
+// same-country pieces as the same and different countries as different, which is what actually
+// determines a border.
+function loadCountries(fileName) {
+  const topology = JSON.parse(fs.readFileSync(path.join(root, 'scripts/data', fileName), 'utf8'));
+  const object = topology.objects.ne_10m_admin_0_countries;
+  const landGeom = merge(topology, object.geometries);
+  rewindGeometry(landGeom);
+  const borderGeoJson = mesh(topology, object, (a, b) => a.properties.name !== b.properties.name);
+  return { landGeoJson: { type: 'Feature', geometry: landGeom, properties: {} }, borderGeoJson };
+}
+const { landGeoJson, borderGeoJson } = loadCountries('countries-coarse.json');
+const { landGeoJson: landDetailGeoJson, borderGeoJson: borderDetailGeoJson } = loadCountries('countries-detail.json');
 
 // State/province-level boundaries for every country, not just the US. world-atlas/us-atlas only
 // bundle country-level and US-only data respectively; no npm package wraps Natural Earth's global
 // admin-1 set, so this is our own locally-committed conversion. Source: Natural Earth's
 // ne_10m_admin_1_states_provinces (the only admin-1 resolution with full global coverage — 110m/
 // 50m only cover the US and a handful of other countries), fetched from
-// https://github.com/nvkelso/natural-earth-vector, then simplified 1% and stripped to
-// name/admin properties via mapshaper:
-//   npx mapshaper -i ne_10m_admin_1_states_provinces.geojson -simplify 1% \
+// https://github.com/nvkelso/natural-earth-vector. This layer is zoom-gated (never drawn at
+// rest, so idle auto-rotation never pays for it), but it's still a real per-frame cost while
+// actually zoomed in and interacting — 8,535 exploded features add up. Simplified 10% (previously
+// 1%, which read as blocky/inaccurate at any real zoom, and briefly 25%, which fixed that but was
+// heavy enough combined with the other detail tiers below to make the whole globe sluggish once
+// zoomed in) with -explode and keep-shapes for the same reason as the countries layer (protects
+// disjoint island provinces from collapsing):
+//   npx mapshaper -i ne_10m_admin_1_states_provinces.geojson -explode -simplify 10% keep-shapes \
 //     -filter-fields name,admin -o format=topojson quantization=1e5 admin1-provinces.json
 const regionsTopology = JSON.parse(
   fs.readFileSync(path.join(root, 'scripts/data/admin1-provinces.json'), 'utf8')
 );
-const regionBorderGeoJson = mesh(regionsTopology, regionsTopology.objects.ne_10m_admin_1, (a, b) => a !== b);
+const regionsObject = regionsTopology.objects.ne_10m_admin_1_states_provinces;
+const regionBorderGeoJson = mesh(
+  regionsTopology,
+  regionsObject,
+  (a, b) => a.properties.name + '|' + a.properties.admin !== b.properties.name + '|' + b.properties.admin
+);
+
+// Curved region name labels (states/provinces) — one per named region, not per exploded piece:
+// grouping by name+admin and picking the largest piece's centroid means an archipelago province's
+// tiny outlying-island fragments don't each try to claim their own label. Reveal zoom is derived
+// from each region's area the same way city reveal zoom is derived from population (see
+// minZoomForPopulation below) — bigger regions (Texas, Western Australia) are legible, and worth
+// showing, at a shallower zoom than a small one squeezed between neighbors.
+// geoArea/geoCentroid are just as winding-sensitive as the polygon clipping that caused the
+// lakes bug — a wrongly-wound ring makes them compute the area (and centroid!) of the
+// complement instead. mesh() doesn't care about winding so this was never fixed for these
+// pieces; it has to be, here, since a few tiny islands were otherwise coming out with the
+// biggest-region priority in the map (their area computed as most of the sphere) and their
+// centroid pointing at the wrong side of the globe entirely.
+const regionFeatures = feature(regionsTopology, regionsObject).features.filter((f) => f.geometry);
+regionFeatures.forEach((f) => rewindGeometry(f.geometry));
+const largestPiecePerRegion = new Map();
+for (const f of regionFeatures) {
+  const key = f.properties.name + '|' + f.properties.admin;
+  const area = Math.abs(geoArea(f)); // steradians
+  const existing = largestPiecePerRegion.get(key);
+  if (!existing || area > existing.area) {
+    largestPiecePerRegion.set(key, { name: f.properties.name, area, centroid: geoCentroid(f), feature: f });
+  }
+}
+
+// So the label curves along the region's own shape (a Middle-earth-map-style fit — "ROHAN" tracks
+// the valley it names, not an arbitrary line of latitude) rather than always running due
+// east-west: the region's principal axis, via PCA on its boundary ring in a local flattened frame
+// centered at the centroid (a small-region-scale approximation — good enough to orient a label,
+// not meant to be geodesically precise). majorSpanDeg (the boundary's actual extent projected
+// onto that axis, not the covariance-derived size, which is a rougher estimate) caps how far the
+// renderer's curve-fit is allowed to sample, so a small region doesn't stretch its label out past
+// its own borders into its neighbors just because the estimated pixel width said there was room.
+function regionOrientation(f, lon0, lat0) {
+  const cosLat0 = Math.cos((lat0 * Math.PI) / 180);
+  const ring = f.geometry.coordinates[0];
+  const pts = ring.map(([lon, lat]) => [(lon - lon0) * cosLat0, lat - lat0]);
+  let sumXX = 0;
+  let sumYY = 0;
+  let sumXY = 0;
+  for (const [x, y] of pts) {
+    sumXX += x * x;
+    sumYY += y * y;
+    sumXY += x * y;
+  }
+  const n = pts.length;
+  const covXX = sumXX / n;
+  const covYY = sumYY / n;
+  const covXY = sumXY / n;
+  const angle = 0.5 * Math.atan2(2 * covXY, covXX - covYY); // radians, CCW from local east
+  const dirX = Math.cos(angle);
+  const dirY = Math.sin(angle);
+  let minProj = Infinity;
+  let maxProj = -Infinity;
+  for (const [x, y] of pts) {
+    const proj = x * dirX + y * dirY;
+    if (proj < minProj) minProj = proj;
+    if (proj > maxProj) maxProj = proj;
+  }
+  // Bearing (clockwise from north, matching the great-circle destination-point formula the
+  // renderer samples along) rather than the standard CCW-from-east angle PCA naturally gives;
+  // normalized to [0, 180) since an axis is the same line at 0° and 180°.
+  let bearingDeg = 90 - (angle * 180) / Math.PI;
+  bearingDeg = ((bearingDeg % 180) + 180) % 180;
+  return { bearingDeg, majorSpanDeg: maxProj - minProj };
+}
+// Calibrated against the actual computed spread of areas (steradians) across every named region:
+// the largest (e.g. Sakha Republic, Western Australia) lands close to REGION_LABEL_LOG_AREA_MAX,
+// the smallest well below it, so the reveal zoom range spans roughly base..base+3 across the full
+// dataset — similar spread to the city population curve.
+const REGION_LABEL_BASE_MIN_ZOOM = 1.6;
+const REGION_LABEL_LOG_AREA_MAX = Math.log10(0.25);
+const REGION_LABEL_ZOOM_PER_LOG_AREA = 0.55;
+function minZoomForArea(area) {
+  const logArea = Math.log10(Math.max(area, 1e-8));
+  return (
+    Math.round(
+      (REGION_LABEL_BASE_MIN_ZOOM + Math.max(0, REGION_LABEL_LOG_AREA_MAX - logArea) * REGION_LABEL_ZOOM_PER_LOG_AREA) *
+        100
+    ) / 100
+  );
+}
+const regionLabels = Array.from(largestPiecePerRegion.values())
+  // A handful of tiny unclaimed territories have no name at all.
+  .filter(({ name }) => typeof name === 'string' && name.trim().length > 0)
+  .map(({ name, area, centroid, feature: f }) => {
+    const { bearingDeg, majorSpanDeg } = regionOrientation(f, centroid[0], centroid[1]);
+    return [
+      name,
+      Math.round(centroid[0] * 1e5) / 1e5,
+      Math.round(centroid[1] * 1e5) / 1e5,
+      minZoomForArea(area),
+      Math.round(bearingDeg * 100) / 100,
+      Math.round(majorSpanDeg * 1e4) / 1e4,
+    ];
+  });
+
+// Mountain icons — a Middle-earth-map-style flourish: illustrated peaks stamped at named mountain
+// locations instead of leaving terrain to plain flat color. Source: Natural Earth's
+// ne_10m_geography_regions_elevation_points, filtered to featurecla === 'mountain' (633 named
+// peaks worldwide, Everest down to regionally-notable ones), fetched from
+// https://github.com/nvkelso/natural-earth-vector. No mapshaper step — these are standalone
+// points with no geometry to simplify, just [name, lon, lat, min_zoom] pulled straight from the
+// source and written to scripts/data/mountains.json.
+//
+// Natural Earth ships its own scalerank/min_zoom for this layer (their own curated "how important
+// is this peak" ranking) — rescaled here from their [4, 8] range to ours, so Everest shows up
+// early like a landmark while more obscure peaks need real zoom, the same reveal idea already
+// used for cities/regions. Already computed into scripts/data/mountains.json, so this is just a
+// straight read, no rescaling logic needed here.
+const mountains = JSON.parse(fs.readFileSync(path.join(root, 'scripts/data/mountains.json'), 'utf8'));
+
+// Rivers (and lake centerlines — segments that continue a river's path through a lake it flows
+// into, rather than leaving a visible gap where the river meets the lake). Natural Earth's global
+// ne_10m_rivers_lake_centerlines (1,455 features) on its own was missing a lot of real rivers —
+// that layer is deliberately sparse at the global scale, with the actual detail split out into
+// separate continent supplements. Only three exist (Europe, North America, Australia — no
+// supplement for South America, Asia, or Africa, a real gap in the source data itself, not
+// something fixable here), but combining all four gets meaningfully closer to complete than the
+// global layer alone: 7,997 features after merging, up from 1,455. Fetched from
+// https://github.com/nvkelso/natural-earth-vector:
+//   ne_10m_rivers_lake_centerlines.geojson, ne_10m_rivers_europe.geojson,
+//   ne_10m_rivers_north_america.geojson, ne_10m_rivers_australia.geojson
+//
+// Each source's own min_zoom (Natural Earth's curated "how important is this river" reveal
+// zoom, same idea as the mountains layer) is rescaled from their combined [2, 7.5] range to ours
+// ([2, 5]) in a one-off merge script before mapshaper ever sees the data — simplest to do once,
+// up front, rather than repeating scalerank-to-zoom logic in the renderer per feature per frame.
+// Nothing in this layer is always-on: even the biggest rivers need real zoom before they show.
+//   npx mapshaper -i rivers-merged.geojson -simplify 15% keep-shapes \
+//     -filter-fields name,min_zoom -o format=topojson quantization=1e5 rivers.json
+//
+// Lines, unlike the polygon layers elsewhere in this file, don't have an "inside" for d3-geo's
+// clipping to get backwards — no winding fix needed here.
+const riversTopology = JSON.parse(fs.readFileSync(path.join(root, 'scripts/data/rivers.json'), 'utf8'));
+const riversGeoJson = feature(riversTopology, riversTopology.objects['rivers-merged']);
 
 // City/town labels, shown at deep zoom. Source: GeoNames' cities1000 dump (every populated place
 // with population >= 1,000 - https://download.geonames.org/export/dump/cities1000.zip), reduced
@@ -62,39 +280,6 @@ const cities = JSON.parse(fs.readFileSync(path.join(root, 'scripts/data/cities.j
   ([name, lon, lat, population]) => [name, lon, lat, minZoomForPopulation(population)]
 );
 
-// Flat, pastel elevation-tinted terrain (land only — ocean keeps its existing plain fill). No
-// npm package or Natural Earth vector product ships classified elevation polygons directly, so
-// this is our own conversion: NOAA's ETOPO1 global relief grid (1 arc-minute, ice-surface,
-// grid-registered - https://www.ngdc.noaa.gov/mgg/global/relief/ETOPO1/data/ice_surface/
-// grid_registered/netcdf/ETOPO1_Ice_g_gmt4.grd.gz), downsampled to 0.1deg with gdal_translate,
-// then polygonized into fixed elevation bands with gdal_contour -p (one flat-fillable polygon per
-// band, not a raster/hillshade — matches the "flat colors, no shading" ask directly since there's
-// nothing to shade), then simplified 3% and quantized to topojson via mapshaper, same as
-// admin1-provinces:
-//   gdal_translate -outsize 3600 1800 -r average ETOPO1_Ice_g_gmt4.grd etopo1_0.1deg.tif
-//   gdal_contour -p -amin elevmin -amax elevmax \
-//     -fl -11000 -4000 -200 0 200 500 1000 2000 4000 9000 \
-//     -f GeoJSON etopo1_0.1deg.tif elevation_bands.geojson
-//   npx mapshaper -i elevation_bands.geojson -simplify 3% \
-//     -o format=topojson quantization=1e5 elevation-bands.json
-const ELEVATION_BAND_COLORS = {
-  0: '#F1F5EE', // 0-200m: lowlands/coastal plains
-  200: '#EDF2E9', // 200-500m: hills/plains
-  500: '#E9EFE3', // 500-1000m: uplands
-  1000: '#E5ECDE', // 1000-2000m: low mountains
-  2000: '#E1E9D8', // 2000-4000m: mountains
-  4000: '#DDE6D3', // 4000m+: high peaks
-};
-const elevationTopology = JSON.parse(
-  fs.readFileSync(path.join(root, 'scripts/data/elevation-bands.json'), 'utf8')
-);
-const elevationBandGeoJson = {
-  type: 'FeatureCollection',
-  features: feature(elevationTopology, elevationTopology.objects.elevation_bands)
-    .features.filter((f) => f.properties.elevmin >= 0)
-    .map((f) => ({ ...f, properties: { color: ELEVATION_BAND_COLORS[f.properties.elevmin] } })),
-};
-
 // Inland water — lakes and other bodies of water, filled the same white as the ocean so they
 // read as "water" rather than land-colored gaps. world-atlas's land layer doesn't carve lakes
 // out as holes at all (too coarse a resolution to bother), so this is its own source: Natural
@@ -118,41 +303,11 @@ const elevationBandGeoJson = {
 // null geometry at a plain 5% simplify, silently dropped rather than just less detailed.
 //   npx mapshaper -i ne_50m_lakes.geojson -simplify 5% keep-shapes -filter-fields name \
 //     -o format=topojson quantization=1e5 lakes-major.json
-//   npx mapshaper -i ne_10m_lakes.geojson -simplify 8% keep-shapes -filter-fields name \
+//   npx mapshaper -i ne_10m_lakes.geojson -simplify 15% keep-shapes -filter-fields name \
 //     -o format=topojson quantization=1e5 lakes-detail.json
 //
-// d3-geo's polygon clipping (used here via clipAngle for the orthographic projection) uses ring
-// winding to decide which side of a clipped edge is "inside"; get it backwards and a lake can
-// clip to its complement instead — the entire visible hemisphere renders in the lake's fill
-// color. Confirmed empirically against d3-geo directly (not just by re-deriving the same formula
-// used to "fix" it, which is tautological): d3-geo wants the exterior ring wound CLOCKWISE under
-// a planar shoelace formula with x=longitude, y=latitude — the opposite of what GeoJSON/RFC 7946
-// states, and the opposite of an earlier version of this fix, which flipped the (correct, as it
-// turns out) majority of rings and broke them. Rewinding here, right before injection, is
-// deliberate: mapshaper normalizes ring order to its own convention when it builds the topology,
-// so fixing the source .geojson before that step doesn't stick — this has to be the last
-// operation before the data reaches the renderer.
-function ringSignedArea(ring) {
-  let sum = 0;
-  for (let i = 0; i < ring.length - 1; i++) {
-    const [x1, y1] = ring[i];
-    const [x2, y2] = ring[i + 1];
-    sum += x1 * y2 - x2 * y1;
-  }
-  return sum / 2;
-}
-function rewindPolygonCoords(coords) {
-  coords.forEach((ring, i) => {
-    const shouldBeClockwise = i === 0; // exterior ring first, holes after
-    const isClockwise = ringSignedArea(ring) < 0;
-    if (isClockwise !== shouldBeClockwise) ring.reverse();
-  });
-}
-function rewindGeometry(geometry) {
-  if (!geometry) return;
-  if (geometry.type === 'Polygon') rewindPolygonCoords(geometry.coordinates);
-  else if (geometry.type === 'MultiPolygon') geometry.coordinates.forEach(rewindPolygonCoords);
-}
+// See ringSignedArea/rewindGeometry above (defined once, next to the land/country loading that
+// needs the same fix) for why every filled polygon here gets rewound before injection.
 function loadLakes(fileName, objectKey) {
   const topology = JSON.parse(fs.readFileSync(path.join(root, 'scripts/data', fileName), 'utf8'));
   const geoJson = feature(topology, topology.objects[objectKey]);
@@ -162,13 +317,14 @@ function loadLakes(fileName, objectKey) {
 }
 
 const lakesMajorGeoJson = loadLakes('lakes-major.json', 'ne_50m_lakes');
-const lakesMajorNames = new Set(lakesMajorGeoJson.features.map((f) => f.properties.name));
-// Excludes anything already covered by the major tier — both are the same flat white, so a
-// duplicate lake costs real render time for zero visual difference.
+// Deliberately NOT excluding lakes already present in the major tier by name: the two tiers
+// aren't the same shape at different resolutions of the same authoritative extent — the 50m
+// source for e.g. Lake Champlain caps out at 44.94°N, south of the US/Canada border, while the
+// 10m source correctly continues to 45.08°N into Quebec. An earlier version deduped by name to
+// save a little render time, which silently threw away the detail tier's more accurate shape for
+// every lake that happened to also appear (usually less accurately) in the coarse tier — worse
+// trade than the extra draw cost, which only applies once actually zoomed in anyway.
 const lakesDetailGeoJson = loadLakes('lakes-detail.json', 'ne_10m_lakes');
-lakesDetailGeoJson.features = lakesDetailGeoJson.features.filter(
-  (f) => !lakesMajorNames.has(f.properties.name)
-);
 
 const theme = {
   oceanLight: '#FFFFFF',
@@ -181,6 +337,10 @@ const theme = {
   pin: '#28312C',
   cityDot: '#8FA396',
   cityLabel: '#5B655F',
+  regionLabel: '#7A6A4F',
+  mountainFill: '#EDE6D6',
+  mountainStroke: '#5B4A38',
+  river: '#FFFFFF',
 };
 
 const bundle = await build({
@@ -208,10 +368,14 @@ const html = `<!DOCTYPE html>
 <script>
 window.LAND_GEOJSON = ${JSON.stringify(landGeoJson)};
 window.BORDER_GEOJSON = ${JSON.stringify(borderGeoJson)};
+window.LAND_DETAIL_GEOJSON = ${JSON.stringify(landDetailGeoJson)};
+window.BORDER_DETAIL_GEOJSON = ${JSON.stringify(borderDetailGeoJson)};
 window.REGION_BORDER_GEOJSON = ${JSON.stringify(regionBorderGeoJson)};
-window.ELEVATION_BAND_GEOJSON = ${JSON.stringify(elevationBandGeoJson)};
+window.REGION_LABELS = ${JSON.stringify(regionLabels)};
 window.LAKES_MAJOR_GEOJSON = ${JSON.stringify(lakesMajorGeoJson)};
 window.LAKES_DETAIL_GEOJSON = ${JSON.stringify(lakesDetailGeoJson)};
+window.MOUNTAINS = ${JSON.stringify(mountains)};
+window.RIVERS_GEOJSON = ${JSON.stringify(riversGeoJson)};
 window.CITIES = ${JSON.stringify(cities)};
 window.THEME = ${JSON.stringify(theme)};
 </script>
