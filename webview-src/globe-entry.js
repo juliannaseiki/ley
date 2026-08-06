@@ -1,4 +1,8 @@
 import { geoOrthographic, geoPath } from 'd3-geo';
+import { angularDistanceDeg, clamp, isFrontFacing as geoIsFrontFacing, visibleCapRadiusDeg as geoVisibleCapRadiusDeg } from './city-labels/geo.js';
+import { selectCityLabels, CITY_RETAIN_HYSTERESIS, CITY_BASE_MIN_ZOOM } from './city-labels/selection.js';
+import { createLabelStateStore, applySelection, dropStaleByZoom, advance as advanceLabelState } from './city-labels/stateMachine.js';
+import { drawCityLabels, cityLabelFont } from './city-labels/render.js';
 
 // LAND_GEOJSON, BORDER_GEOJSON, LAND_DETAIL_PIECES, LAND_DETAIL_BBOXES, BORDER_DETAIL_ARCS,
 // BORDER_DETAIL_BBOXES, REGION_BORDER_ARCS, REGION_BORDER_BBOXES, REGION_LABELS,
@@ -51,52 +55,79 @@ const REGION_BORDER_FADE_END = 2.2;
 // always resolves to fully opaque) — this constant only decides whether labels are eligible to
 // draw at all.
 const LABEL_MIN_ZOOM = 1.8;
-// Each city's reveal zoom is precomputed at build time from its population (see
-// build-globe-html.mjs) as CITIES[i][3]; CITY_BASE_MIN_ZOOM is just the lowest such value in the
-// dataset, used as a cheap early-out before scanning the array at all — keep this in sync with the
-// build script's own CITY_BASE_MIN_ZOOM. Reached cities ease in via the time-based fade in
-// recomputeCityLabels/renderInner, not a zoom-based one — recomputeCityLabels only runs at gesture
-// end now (not continuously through a pinch), so a fade tied to zoom itself has no gesture left to
-// animate across and would just get stuck part-way whenever the user settles at a zoom inside that
-// city's fade window. CITY_MAX_LABELS caps how many can draw on screen at once — keep this low; a
-// phone screen only comfortably fits a dozen or so labels before it reads as clutter regardless of
-// how well overlap is avoided.
-const CITY_BASE_MIN_ZOOM = 2.8;
-const CITY_MAX_LABELS = 12;
-// City/town labels use their own, slower fade duration rather than the shared LABEL_FADE_MS —
-// at 220ms (tuned for the astro line labels, which fade as a byproduct of quick, frequent
-// relayouts) a city label reads as a pop-in, not a fade, since it only ever appears once per
-// gesture rather than every frame. A longer, clearly-visible fade here also softens the effect of
-// the grid-fairness picks changing which specific town shows as the user navigates — the same
-// motion that made retained labels feel like they were "randomly popping up" before they were
-// made persistent.
-const CITY_LABEL_FADE_MS = 450;
-// See the comment in recomputeCityLabels' retained-eligibility check — this is the margin below a
-// city's own reveal threshold that zoom has to actually cross before an already-shown city drops
-// for that reason, so a sub-threshold zoom wobble doesn't read as random flicker.
-const CITY_RETAIN_HYSTERESIS = 0.4;
-// Grid used only for spatial fairness among fresh candidates (see recomputeCityLabels) — coarse
-// enough that a real region (a state, a metro area) reliably lands in its own cell or two, fine
-// enough that two genuinely distant areas sharing a screen don't get lumped into one.
-const CITY_GRID_COLS = 4;
-const CITY_GRID_ROWS = 6;
-// The full candidate scan + collision layout (recomputeCityLabels) is too expensive to run on
-// every single animation frame now that CITIES has grown to 170k+ entries — a drag gesture fires
-// render() on every pointermove, so "every frame" during an active drag was actually more like
-// "every few milliseconds". Recomputing on a timer instead (rather than every frame) just traded
-// one bug for another: the collision layout is order-dependent on current screen position, so two
-// snapshots a couple hundred ms apart during a drag can pick different subsets of an unchanged set
-// of on-screen cities, and a still-visible city loses its slot — reads as labels randomly
-// vanishing while just panning around. Recomputing only at the end of a gesture (see onPointerUp),
-// same as the astro line labels already do, fixes both: zero recompute cost during the drag itself,
-// and the selection only changes when the user actually changes what they're looking at, not
-// mid-motion. cityLabels is the cache; the per-frame render path just reprojects each already-
-// chosen city's lon/lat live (cheap) so labels still track the globe smoothly as it rotates.
-let cityLabels = []; // [{ name, lon, lat, minZoom, left, right, top, bottom }]
-// Cities dropped by the most recent recomputeCityLabels(), still easing out — see the city label
-// block in renderInner for how these get drawn alongside the active set.
-let fadingOutCityLabels = []; // [{ name, lon, lat, fadeOutStartAt }]
+// The city-label selection algorithm's own tuning (CITY_MAX_LABELS, CITY_GRID_COLS/ROWS) now
+// lives entirely in city-labels/selection.js — this file only imports the two constants that also
+// affect drawing here: CITY_BASE_MIN_ZOOM (the fade-eligibility gate below) and
+// CITY_RETAIN_HYSTERESIS (the live per-frame check in updateCityLabelAnimation). CITY_BASE_MIN_ZOOM
+// must stay numerically in sync with build-globe-html.mjs's own copy (which derives every city's
+// per-city minZoom from population) — a pre-existing cross-file constant, not a new duplication.
+//
+// City/town label fade timing (CITY_LABEL_FADE_MS) and the fadingIn/visible/fadingOut phase
+// machinery now live in city-labels/stateMachine.js.
+//
+// The full candidate scan + collision layout (recomputeCityLabels/selectCityLabels) is too
+// expensive to run on every single animation frame now that CITIES has grown to 170k+ entries —
+// a drag gesture fires render() on every pointermove, so "every frame" during an active drag was
+// actually more like "every few milliseconds". cityLabelState is the cache — keyed by each city's
+// stable index into CITIES (see the cityCells comment in build-globe-html.mjs) rather than the old
+// name+lon+lat string key — the per-frame render path just reprojects each already-tracked city's
+// lon/lat live (cheap) so labels still track the globe smoothly as it rotates even between actual
+// recomputes.
+//
+// An earlier version of this recomputed on a plain timer during a drag and that read as labels
+// randomly vanishing while just panning around — but the actual cause was that collision placement
+// was order-dependent on screen position AND already-visible labels had no special standing, so a
+// label already showing could lose a placement slot to a fresh competitor purely because a new
+// snapshot's collisions shook out differently, with nothing about its own relevance having
+// changed. That's fixed now at the source (see the "already-shown labels skip collision" comment
+// in selection.js), not worked around by recomputing rarely — an already-visible label can only
+// lose its slot by crossing back below its own zoom threshold or by the cap trimming the least
+// significant labels when there are genuinely more qualifying places than room, never by collision
+// order. That's what makes it safe to recompute more often than "only at gesture end" now: see
+// maybeRecomputeCityLabelsDuringGesture below.
+const cityLabelState = createLabelStateStore();
 let baseScale = 100;
+
+// Recomputing on every single pointermove would mean a real spatial-index query + placement pass
+// every few milliseconds during a drag — the spatial index (see city-labels/spatialIndex.js) made
+// that pass cheap relative to the old 170k-brute-force scan, but "cheap" isn't "free", and nothing
+// is gained recomputing more often than the view has actually moved enough to matter (retained
+// labels are already being reprojected live every frame regardless of whether a recompute ran).
+// Gating on real movement — either the look-at point has rotated past
+// CITY_RECOMPUTE_ROTATION_THRESHOLD_DEG or zoom has changed by more than
+// CITY_RECOMPUTE_ZOOM_RATIO_THRESHOLD since the last recompute — means a slow, careful drag or a
+// pinch that's barely moving doesn't recompute at all, while a real pan/zoom keeps labels updating
+// live instead of only once the gesture ends. CITY_RECOMPUTE_MIN_INTERVAL_MS is a hard ceiling on
+// top of that (never more than ~8 recomputes/sec) so a fast flick with many pointermove events in
+// quick succession can't still force a recompute every single frame just because each individual
+// frame's movement happened to clear the distance threshold.
+const CITY_RECOMPUTE_MIN_INTERVAL_MS = 120;
+const CITY_RECOMPUTE_ROTATION_THRESHOLD_DEG = 4;
+const CITY_RECOMPUTE_ZOOM_RATIO_THRESHOLD = 0.15;
+let lastCityRecomputeAt = 0;
+let lastCityRecomputeLookLon = null;
+let lastCityRecomputeLookLat = null;
+let lastCityRecomputeZoom = null;
+
+function shouldRecomputeCityLabelsNow(now) {
+  if (lastCityRecomputeLookLon === null) return true;
+  if (now - lastCityRecomputeAt < CITY_RECOMPUTE_MIN_INTERVAL_MS) return false;
+  const lookLon = -rotation[0];
+  const lookLat = -rotation[1];
+  const rotationDelta = angularDistanceDeg(lookLon, lookLat, lastCityRecomputeLookLon, lastCityRecomputeLookLat);
+  if (rotationDelta > CITY_RECOMPUTE_ROTATION_THRESHOLD_DEG) return true;
+  const zoomRatio = Math.abs(zoom - lastCityRecomputeZoom) / lastCityRecomputeZoom;
+  return zoomRatio > CITY_RECOMPUTE_ZOOM_RATIO_THRESHOLD;
+}
+
+// Called from onPointerMove — a real recompute mid-gesture, gated by shouldRecomputeCityLabelsNow
+// above, rather than only ever at gesture end (onPointerUp still always recomputes unconditionally
+// on release, as the final settle to an exact match for wherever the user ended up).
+function maybeRecomputeCityLabelsDuringGesture() {
+  const now = performance.now();
+  if (!shouldRecomputeCityLabelsNow(now)) return;
+  recomputeCityLabels();
+}
 
 // Curved region name labels (states/provinces) — laid out along the region's own line of
 // latitude (see layoutCurvedLabel) so the curve is exactly how the globe's surface actually
@@ -191,33 +222,24 @@ function render() {
 }
 
 // The full recompute only runs at gesture end (see recomputeCityLabels), so during an active,
-// continuous zoom-out (finger still down) cityLabels still holds whatever was showing before the
-// gesture started — a screen's worth of small towns from a much deeper zoom. The per-frame draw
-// loop below only ever checked front-facing/on-screen, never each label's own zoom threshold, so
-// those stale labels just sat there at full opacity for the whole gesture, not clearing until the
+// continuous zoom-out (finger still down) cityLabelState still holds whatever was showing before
+// the gesture started — a screen's worth of small towns from a much deeper zoom. Without this,
+// those stale labels would sit there at full opacity for the whole gesture, not clearing until the
 // user lifted their finger and the next recompute finally pruned them — reads as "places aren't
-// fading out on zoom out." Splitting zoom-ineligible labels into fadingOutCityLabels every frame
-// (not just at recompute) means the exact same easing-out animation recomputeCityLabels already
-// uses for a dropped label plays live, continuously, as zoom actually crosses each label's own
-// threshold — not just once the gesture happens to end.
-function fadeOutStaleCityLabels() {
-  if (cityLabels.length === 0) return;
-  const now = performance.now();
-  const stillEligible = [];
-  for (const c of cityLabels) {
-    if (zoom <= c.minZoom - CITY_RETAIN_HYSTERESIS) {
-      fadingOutCityLabels.push({ name: c.name, lon: c.lon, lat: c.lat, fadeOutStartAt: now });
-    } else {
-      stillEligible.push(c);
-    }
-  }
-  if (stillEligible.length !== cityLabels.length) cityLabels = stillEligible;
+// fading out on zoom out." Starting each label's fade-out live, every frame, as zoom actually
+// crosses its own threshold (dropStaleByZoom) — not just once the gesture happens to end — and
+// then always advancing every tracked label's animation by elapsed time (advanceLabelState,
+// unconditional: it has to run even when nothing new just went stale, or an in-progress fade would
+// never actually finish playing) is what makes the fade continuous instead of stuck-then-sudden.
+function updateCityLabelAnimation(now) {
+  dropStaleByZoom(cityLabelState, zoom, CITY_RETAIN_HYSTERESIS, now);
+  advanceLabelState(cityLabelState, now);
 }
 
 function renderInner() {
   projection.rotate(rotation);
   ctx.clearRect(0, 0, width, height);
-  fadeOutStaleCityLabels();
+  updateCityLabelAnimation(performance.now());
 
   const center = [width / 2, height / 2];
   const radius = baseScale * zoom;
@@ -441,56 +463,20 @@ function renderInner() {
   // border's own fade range and get progressively denser the further in you go, same idea as
   // Apple Maps/Flighty revealing more place names the deeper you zoom. The expensive part (the
   // full candidate scan + collision layout) only runs at the end of a gesture — see
-  // recomputeCityLabels and its call site in onPointerUp — so this just reprojects the cached
-  // selection live every frame. fadingOutCityLabels are cities that were showing a moment ago and
-  // just lost their slot (zoomed out past their reveal threshold, rotated off screen, or lost a
-  // collision to a higher-priority neighbor) — drawn here too so they ease out instead of
-  // vanishing the instant a recompute drops them, symmetric with the fade-in below. That list can
-  // be non-empty even once zoom has dropped back to/below CITY_BASE_MIN_ZOOM (a big zoom-out can
-  // drop every city label in one recompute), so the gate below checks both.
-  if (zoom > CITY_BASE_MIN_ZOOM || fadingOutCityLabels.length > 0) {
-    ctx.font = "italic 500 11px Georgia, 'Times New Roman', serif";
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
-    const nowMs = performance.now();
-    // A per-label fade-in that only runs once, the first time that specific city enters the
-    // selection — see recomputeCityLabels, which carries a label's fadeStartAt forward across
-    // recomputes if it was already showing, rather than restamping it fresh every time the
-    // selection refreshes. Always resolves to fully opaque and stays there — nothing here is tied
-    // to the current zoom, so a label never gets stuck part-faded just because the user settled at
-    // some particular zoom level.
-    for (const c of cityLabels) {
-      if (!isFrontFacing([c.lon, c.lat])) continue;
-      const p = projection([c.lon, c.lat]);
-      if (!p) continue;
-      if (p[0] < 0 || p[0] > width || p[1] < 0 || p[1] > height) continue;
-      ctx.globalAlpha = Math.min(1, (nowMs - c.fadeStartAt) / CITY_LABEL_FADE_MS);
-      ctx.beginPath();
-      ctx.arc(p[0], p[1], 1.6, 0, Math.PI * 2);
-      ctx.fillStyle = THEME.cityDot;
-      ctx.fill();
-      ctx.fillStyle = THEME.cityLabel;
-      ctx.fillText(c.name, p[0] + 5, p[1]);
-    }
-    for (const c of fadingOutCityLabels) {
-      const alpha = 1 - (nowMs - c.fadeOutStartAt) / CITY_LABEL_FADE_MS;
-      if (alpha <= 0) continue;
-      if (!isFrontFacing([c.lon, c.lat])) continue;
-      const p = projection([c.lon, c.lat]);
-      if (!p) continue;
-      if (p[0] < 0 || p[0] > width || p[1] < 0 || p[1] > height) continue;
-      ctx.globalAlpha = alpha;
-      ctx.beginPath();
-      ctx.arc(p[0], p[1], 1.6, 0, Math.PI * 2);
-      ctx.fillStyle = THEME.cityDot;
-      ctx.fill();
-      ctx.fillStyle = THEME.cityLabel;
-      ctx.fillText(c.name, p[0] + 5, p[1]);
-    }
-    ctx.globalAlpha = 1;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'alphabetic';
-  }
+  // recomputeCityLabels and its call site in onPointerUp — drawCityLabels just reprojects each
+  // tracked label's (lon, lat) live and reads its current fade phase/opacity from the state
+  // machine (updateCityLabelAnimation above already advanced it this frame), font size comes from
+  // a continuous function of zoom instead of a fixed literal.
+  drawCityLabels(ctx, cityLabelState, {
+    projection,
+    isFrontFacing: (lon, lat) => isFrontFacing([lon, lat]),
+    width,
+    height,
+    zoom,
+    dotColor: THEME.cityDot,
+    textColor: THEME.cityLabel,
+    now: performance.now(),
+  });
 
   // Astrocartography lines. Round caps/joins matter here: many MC/IC meridians converge on the
   // same pole from different angles, and flat (default) caps leave a visible star-shaped gap
@@ -652,40 +638,27 @@ function mixWithWhite(hex, colorWeight) {
   return `rgb(${mix(r)},${mix(g)},${mix(b)})`;
 }
 
-// Whether a [lon, lat] point currently faces the viewer, given the globe's rotation.
+// Whether a [lon, lat] point currently faces the viewer, given the globe's rotation. Thin wrapper
+// over city-labels/geo.js's parameterized version (which the label modules also use directly,
+// without this closure) — kept as a same-signature wrapper here rather than rewriting every one of
+// this file's many call sites to pass rotation explicitly.
 function isFrontFacing([lon, lat]) {
-  const toRad = Math.PI / 180;
-  const lambda0 = -rotation[0] * toRad;
-  const phi0 = -rotation[1] * toRad;
-  const lambda = lon * toRad;
-  const phi = lat * toRad;
-  const cosc = Math.sin(phi0) * Math.sin(phi) + Math.cos(phi0) * Math.cos(phi) * Math.cos(lambda - lambda0);
-  return cosc > 0;
-}
-
-function angularDistanceDeg(lon1, lat1, lon2, lat2) {
-  const toRad = Math.PI / 180;
-  const p1 = lat1 * toRad;
-  const p2 = lat2 * toRad;
-  const cosc = Math.sin(p1) * Math.sin(p2) + Math.cos(p1) * Math.cos(p2) * Math.cos((lon2 - lon1) * toRad);
-  return (Math.acos(clamp(cosc, -1, 1)) * 180) / Math.PI;
+  return geoIsFrontFacing(lon, lat, -rotation[0], -rotation[1]);
 }
 
 // Once zoomed in enough that the canvas shows only a slice of the front hemisphere, most of a
 // detail layer's geometry (land-detail polygons, border/region-border arcs, rivers, lakes) is
 // still technically "front-facing" by isFrontFacing's hemisphere test but projects way outside the
 // canvas — full path tracing (project every point, emit canvas path commands) still happens for
-// all of it every frame otherwise, for zero visible benefit. capRadiusDeg (see
-// visibleCapRadiusDeg) is the farthest angular distance from the current look-at point that can
-// possibly land inside the canvas rectangle; a piece whose own bbox is farther than that, plus its
-// own angular size and a safety margin, can only be off-screen. Below the zoom where the canvas
-// already shows the whole front hemisphere, capRadiusDeg is 90 and nothing gets culled — there's
-// nothing to gain and every early-return here is a no-op.
+// all of it every frame otherwise, for zero visible benefit. capRadiusDeg is the farthest angular
+// distance from the current look-at point that can possibly land inside the canvas rectangle; a
+// piece whose own bbox is farther than that, plus its own angular size and a safety margin, can
+// only be off-screen. Below the zoom where the canvas already shows the whole front hemisphere,
+// capRadiusDeg is 90 and nothing gets culled — there's nothing to gain and every early-return here
+// is a no-op. Thin wrapper over city-labels/geo.js's parameterized version, same reasoning as
+// isFrontFacing above.
 function visibleCapRadiusDeg() {
-  const halfDiagonal = Math.sqrt((width / 2) ** 2 + (height / 2) ** 2);
-  const radius = baseScale * zoom;
-  if (halfDiagonal >= radius) return 90;
-  return (Math.asin(Math.min(1, halfDiagonal / radius)) * 180) / Math.PI;
+  return geoVisibleCapRadiusDeg(width, height, baseScale, zoom);
 }
 
 // Margin is generous and additive, not multiplicative — a false negative here (treating something
@@ -754,227 +727,44 @@ function hitTestLine(x, y) {
   return null;
 }
 
-// The expensive part of city labels: scans every city in CITIES for one that's past its reveal
-// zoom and actually on screen, then greedily claims labels in population order under real
-// bounding-box collision, stopping at CITY_MAX_LABELS. Only called at the end of a gesture (see
-// its call site in onPointerUp) rather than run every frame — with 170k+ cities this is real work,
-// and a drag gesture calls render() far more often than once per animation frame.
-//
-// Already-visible cities get first claim on a slot, ahead of any fresh candidate regardless of
-// population — panning slightly or zooming in further shifts everyone's screen position, and
-// without this a label that's already showing could still lose its spot simply because the new
-// layout's collisions shook out differently, which reads as it randomly vanishing even though
-// nothing about its own relevance changed. It only drops out here if it's actually left the
-// visible area or zoom has dropped back below its own reveal threshold — zooming out is the one
-// case where losing labels is expected.
+// The selection algorithm itself (retained-first, grid-based fairness, priority-capped collision)
+// lives in city-labels/selection.js — see that file for the full reasoning. This is just the call
+// site: still only invoked at the end of a gesture (see onPointerUp). previouslyVisible is built
+// from the current state store (every tracked label, regardless of phase — including ones already
+// fading out, so one can resume smoothly rather than pop if it's re-selected before its fade-out
+// finishes; see applySelection in stateMachine.js). Font is set here to whatever size the current
+// zoom will actually render at, so the collision boxes selectCityLabels computes from measured
+// text width match what drawCityLabels later draws.
 function recomputeCityLabels() {
-  ctx.font = "italic 500 11px Georgia, 'Times New Roman', serif";
+  ctx.font = cityLabelFont(zoom);
   const now = performance.now();
 
-  const retained = [];
-  const retainedKeys = new Set();
-  for (const c of cityLabels) {
-    // A plain `zoom <= c.minZoom` check has zero margin — a city whose threshold sits close to
-    // the current zoom can get dropped by a barely-perceptible zoom dip (a finger lifting and
-    // re-touching mid-gesture shifts zoom by a tiny amount without visibly moving anything on
-    // screen), and population tiers are often close enough together that the same tiny dip drops
-    // one city while revealing another right as it happens — reads as random flicker even though
-    // the user didn't consciously zoom out. Once a city is showing, require zoom to fall
-    // meaningfully below its own threshold, not just barely, before that counts as a real
-    // zoom-out.
-    if (zoom <= c.minZoom - CITY_RETAIN_HYSTERESIS) continue;
-    if (!isFrontFacing([c.lon, c.lat])) continue;
-    const p = projection([c.lon, c.lat]);
-    if (!p) continue;
-    if (p[0] < 0 || p[0] > width || p[1] < 0 || p[1] > height) continue;
-    retained.push({ name: c.name, lon: c.lon, lat: c.lat, minZoom: c.minZoom, x: p[0], y: p[1], fadeStartAt: c.fadeStartAt });
-    retainedKeys.add(c.name + '|' + c.lon + '|' + c.lat);
-  }
-  // Lower minZoom = bigger population (see build-time formula) = higher priority.
-  retained.sort((a, b) => a.minZoom - b.minZoom);
+  const previouslyVisible = [...cityLabelState.entries()].map(([index, e]) => ({
+    index,
+    name: e.name,
+    lon: e.lon,
+    lat: e.lat,
+    minZoom: e.minZoom,
+  }));
 
-  // Fresh candidates — everything else that now qualifies but wasn't already on screen.
-  const candidates = [];
-  for (const city of CITIES) {
-    const [name, lon, lat, minZoom] = city;
-    if (zoom <= minZoom) continue;
-    if (retainedKeys.has(name + '|' + lon + '|' + lat)) continue;
-    // isFrontFacing alone is a hemisphere check, not an "is this actually in view" check — at
-    // any real zoom, that hemisphere covers a huge stretch of the globe (way beyond the visible
-    // canvas), so without also checking the projected point is within the canvas, cities on the
-    // other side of the world could still qualify. Since they're sorted by population next,
-    // major world cities (always front-facing from anywhere, always highest priority) would
-    // then consume the entire CITY_MAX_LABELS budget before a single actually-visible city near
-    // the current view ever got a turn — which is exactly what was happening.
-    if (!isFrontFacing([lon, lat])) continue;
-    const p = projection([lon, lat]);
-    if (!p) continue;
-    if (p[0] < 0 || p[0] > width || p[1] < 0 || p[1] > height) continue;
-    candidates.push({ name, lon, lat, minZoom, x: p[0], y: p[1] });
-  }
+  const placed = selectCityLabels({
+    cities: CITIES,
+    previouslyVisible,
+    zoom,
+    rotation,
+    projection,
+    width,
+    height,
+    baseScale,
+    measureTextWidth: (name) => ctx.measureText(name).width,
+  });
 
-  // A fixed grid cell doesn't account for actual text width — a long name overlaps its
-  // neighbor regardless of which cell each dot falls in. Real bounding-box collision, checked
-  // in priority order and stopping at a small hard cap, both keeps text from overlapping and
-  // keeps the screen from turning into a wall of labels: only measure/check as many candidates
-  // as it takes to either fill the cap or run out, not the full (possibly huge) candidate list.
-  //
-  // The margins are deliberately generous, not just tight enough to avoid touching — labels only
-  // resettle at the end of a gesture (not live during one, see the comment above this function),
-  // so a label can drift a few pixels from its collision-solved position before the next
-  // recompute catches up. A tight margin let that drift show up as visible overlap in dense
-  // clusters; the fix that actually matches "render fewer labels here" is to require more
-  // clearance in the first place, which drops more candidates in exactly the crowded spots and
-  // leaves sparser areas untouched (nothing there was close enough to collide either way).
-  const placed = [];
-  function tryPlace(c, fadeStartAt) {
-    if (placed.length >= CITY_MAX_LABELS) return false;
-    const textWidth = ctx.measureText(c.name).width;
-    const left = c.x - 4;
-    const right = c.x + 5 + textWidth + 10;
-    const top = c.y - 9;
-    const bottom = c.y + 9;
-    const collides = placed.some((p) => !(right < p.left || left > p.right || bottom < p.top || top > p.bottom));
-    if (collides) return false;
-    placed.push({ name: c.name, lon: c.lon, lat: c.lat, minZoom: c.minZoom, left, right, top, bottom, fadeStartAt });
-    return true;
-  }
-  // Once a label is showing, it must never disappear just from the user panning or zooming in
-  // further, only from zooming back out past its own threshold (already filtered into `retained`
-  // above) or leaving the screen, matching how Apple/Google Maps labels behave — so retained
-  // cities skip the collision check entirely (rotating the globe shifts each point's screen
-  // position independently, so two labels that didn't collide a moment ago could newly overlap
-  // after a pan, and whichever got checked second would silently drop otherwise).
-  //
-  // But CITY_MAX_LABELS still has to bind on the TOTAL — retained ones included — or panning
-  // across a long stretch of real, individually-qualifying towns at a fixed zoom (no zoom-out to
-  // ever trigger a drop) just accumulates them without limit, which is exactly the wall-of-
-  // overlapping-text this cap exists to prevent. When retained alone outgrows the cap, the least
-  // significant ones (highest minZoom, i.e. smallest population) are the ones that give way —
-  // they still ease out through the normal fade, just triggered by running out of room rather
-  // than a zoom or screen-edge boundary. `retained` is already sorted by minZoom above, so this is
-  // a plain slice.
-  const keptRetained = retained.slice(0, CITY_MAX_LABELS);
-  for (const c of keptRetained) {
-    const textWidth = ctx.measureText(c.name).width;
-    placed.push({
-      name: c.name,
-      lon: c.lon,
-      lat: c.lat,
-      minZoom: c.minZoom,
-      left: c.x - 4,
-      right: c.x + 5 + textWidth + 10,
-      top: c.y - 9,
-      bottom: c.y + 9,
-      fadeStartAt: c.fadeStartAt,
-    });
-  }
+  applySelection(cityLabelState, placed, now);
 
-  function cellKeyOf(c) {
-    const col = clamp(Math.floor((c.x / width) * CITY_GRID_COLS), 0, CITY_GRID_COLS - 1);
-    const row = clamp(Math.floor((c.y / height) * CITY_GRID_ROWS), 0, CITY_GRID_ROWS - 1);
-    return col + ',' + row;
-  }
-
-  // A flat population-priority sort here lets a dense, populous area (Hartford/Springfield/
-  // Worcester) claim every remaining slot before a real but less-populous area sharing the same
-  // screen (Vermont) ever gets a turn. Bucketing fresh candidates into a coarse grid and
-  // round-robining across cells (each cell's best remaining candidate before any cell's second)
-  // means every part of the visible screen gets a shot at the room left over after retained
-  // labels, before any one part gets a second. Cells already covered by a retained label count
-  // as fulfilled too.
-  const cellsFulfilled = new Set(keptRetained.map(cellKeyOf));
-  const cellBuckets = new Map();
-  for (const c of candidates) {
-    const key = cellKeyOf(c);
-    if (!cellBuckets.has(key)) cellBuckets.set(key, []);
-    cellBuckets.get(key).push(c);
-  }
-
-  // Fairness among real candidates only helps when every cell actually has one to put forward.
-  // Vermont's biggest town is genuinely smaller than Hartford/Worcester/Springfield, so at a zoom
-  // where those neighbors have just crossed their own population threshold, Vermont's hasn't
-  // crossed its own yet — its cell never had an entry in `candidates` to begin with, so no amount
-  // of round-robining among real candidates touches it. Giving that cell's single biggest place a
-  // bucket of its own (one entry) lets it compete in the SAME round 1 as every other cell's first
-  // pick — the fix that matters is making sure this runs before the main round-robin below, not
-  // after: running it only once cap room happened to survive every other cell's second and third
-  // picks (the previous approach) meant a fully-populated screen elsewhere could exhaust the cap
-  // before an empty cell ever got a turn, which is exactly what kept happening.
-  if (zoom > CITY_BASE_MIN_ZOOM) {
-    const fallbackBest = new Map();
-    for (const city of CITIES) {
-      const [name, lon, lat, minZoom] = city;
-      if (zoom > minZoom) continue; // already a real candidate above, no fallback needed
-      if (retainedKeys.has(name + '|' + lon + '|' + lat)) continue;
-      if (!isFrontFacing([lon, lat])) continue;
-      const p = projection([lon, lat]);
-      if (!p) continue;
-      if (p[0] < 0 || p[0] > width || p[1] < 0 || p[1] > height) continue;
-      const key = cellKeyOf({ x: p[0], y: p[1] });
-      if (cellsFulfilled.has(key) || cellBuckets.has(key)) continue;
-      const existing = fallbackBest.get(key);
-      if (!existing || minZoom < existing.minZoom) {
-        fallbackBest.set(key, { name, lon, lat, minZoom, x: p[0], y: p[1] });
-      }
-    }
-    for (const [key, c] of fallbackBest) cellBuckets.set(key, [c]);
-  }
-
-  const buckets = [...cellBuckets.entries()];
-  for (const [, bucket] of buckets) bucket.sort((a, b) => a.minZoom - b.minZoom);
-
-  // Round 1 (breadth): every occupied cell — real candidate or Vermont-style fallback — gets a
-  // shot at its single best pick before any cell gets a second (round 2 below). Letting this
-  // round ignore CITY_MAX_LABELS entirely was tried and made things worse the other direction: 20+
-  // simultaneously-occupied cells (a wide, genuinely dense stretch of coastline, say) each placing
-  // one label unconditionally blew straight past the cap, right back to the wall-of-overlapping-
-  // text problem. The cap has to bind here too — the fix that actually matters is HOW cells get
-  // cut off once it does. Iterating buckets in raw insertion order (tried before this) let Rutland
-  // lose a slot to North Adams for no reason related to which was the better candidate — purely
-  // because North Adams' cell came first in iteration order when the 12th slot ran out. Sorting
-  // this round's candidates by minZoom first means that when the cap forces a cutoff, it's the
-  // objectively weaker candidates (smaller places, or fallback picks further from their own
-  // threshold) that miss out, not whichever cell happened to be enumerated first — still exactly
-  // one shot per cell, just prioritized instead of arbitrary.
-  const roundOnePicks = buckets
-    .filter(([, bucket]) => bucket.length > 0)
-    .map(([key, bucket]) => ({ key, item: bucket[0] }))
-    .sort((a, b) => a.item.minZoom - b.item.minZoom);
-  for (const { key, item } of roundOnePicks) {
-    cellBuckets.get(key).shift();
-    if (tryPlace(item, now)) cellsFulfilled.add(key);
-  }
-
-  // Round 2+ (depth, capped): a cell dense enough to have more than one real candidate can add
-  // more, but only up to CITY_MAX_LABELS total — this is the cap doing its actual job, limiting
-  // how much any one busy area can pile on top of the one-per-area guarantee above.
-  let remaining = 0;
-  for (const [, bucket] of buckets) remaining += bucket.length;
-  let bucketIndex = 0;
-  while (remaining > 0 && placed.length < CITY_MAX_LABELS && buckets.length > 0) {
-    const [key, bucket] = buckets[bucketIndex % buckets.length];
-    bucketIndex++;
-    if (bucket.length > 0) {
-      const c = bucket.shift();
-      if (tryPlace(c, now)) cellsFulfilled.add(key);
-      remaining--;
-    }
-  }
-
-  // Anything that was showing a moment ago but didn't make it into `placed` this round eases out
-  // instead of vanishing outright — see fadingOutCityLabels' declaration and its draw loop in
-  // renderInner. Already-expired entries from a previous drop are pruned here rather than reset,
-  // so an unrelated drop elsewhere doesn't restart a fade that's already most of the way through.
-  const placedKeys = new Set(placed.map((c) => c.name + '|' + c.lon + '|' + c.lat));
-  const freshlyDropped = cityLabels
-    .filter((c) => !placedKeys.has(c.name + '|' + c.lon + '|' + c.lat))
-    .map((c) => ({ name: c.name, lon: c.lon, lat: c.lat, fadeOutStartAt: now }));
-  fadingOutCityLabels = fadingOutCityLabels
-    .filter((c) => now - c.fadeOutStartAt < CITY_LABEL_FADE_MS)
-    .concat(freshlyDropped);
-
-  cityLabels = placed;
+  lastCityRecomputeAt = now;
+  lastCityRecomputeLookLon = -rotation[0];
+  lastCityRecomputeLookLat = -rotation[1];
+  lastCityRecomputeZoom = zoom;
 }
 
 // Standard spherical "destination point given distance and bearing" formula — walks a great
@@ -1400,9 +1190,13 @@ function tick(now) {
   // so the animation actually plays instead of snapping straight to its end state on the next
   // redraw — matters most for city labels, since a fade starts right at gesture end, when nothing
   // else is left to keep triggering renders.
-  const cityFading =
-    cityLabels.some((c) => now - c.fadeStartAt < CITY_LABEL_FADE_MS) ||
-    fadingOutCityLabels.some((c) => now - c.fadeOutStartAt < CITY_LABEL_FADE_MS);
+  let cityFading = false;
+  for (const entry of cityLabelState.values()) {
+    if (entry.phase !== 'visible') {
+      cityFading = true;
+      break;
+    }
+  }
   const regionLabelFading =
     regionLabels.some((c) => now - c.fadeStartAt < LABEL_FADE_MS) ||
     fadingOutRegionLabels.some((c) => now - c.fadeOutStartAt < LABEL_FADE_MS);
@@ -1459,6 +1253,7 @@ function onPointerMove(e) {
     const rotSpeed = 220 / (baseScale * zoom);
     rotation[0] += dx * rotSpeed;
     rotation[1] = clamp(rotation[1] - dy * rotSpeed, -85, 85);
+    maybeRecomputeCityLabelsDuringGesture();
     render();
   } else if (pointers.size === 2 && pinchStart) {
     const [a, b] = Array.from(pointers.values());
@@ -1472,6 +1267,7 @@ function onPointerMove(e) {
       const ratio = Math.pow(dist / pinchStart.distance, PINCH_ZOOM_POWER);
       zoom = clamp(ratio * pinchStart.zoom, MIN_ZOOM, MAX_ZOOM);
       applyScale();
+      maybeRecomputeCityLabelsDuringGesture();
       render();
     }
   }
@@ -1493,18 +1289,17 @@ function onPointerUp(e) {
   }
   tapCandidate = null;
 
-  // Labels hold their positions during the drag/pinch itself; once every finger has lifted,
-  // refresh them to match wherever the user ended up.
+  // Astro line labels and region labels still only ever recompute here, at gesture end — city
+  // labels now also recompute continuously during the gesture itself, gated by real movement (see
+  // maybeRecomputeCityLabelsDuringGesture), but this unconditional call on release is still what
+  // guarantees the final state exactly matches wherever the user actually ended up, rather than
+  // "close enough as of the last gated recompute".
   if (pointers.size === 0) {
     recomputeLabels();
     recomputeCityLabels();
     if (SHOW_REGION_LABELS) recomputeRegionLabels();
     render();
   }
-}
-
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
 }
 
 function handleTap(x, y) {
