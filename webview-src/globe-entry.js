@@ -1,8 +1,17 @@
 import { geoOrthographic, geoPath } from 'd3-geo';
 
-// LAND_GEOJSON, BORDER_GEOJSON, REGION_BORDER_GEOJSON, ELEVATION_BAND_GEOJSON, CITIES, and THEME
-// are injected as globals by the HTML wrapper at build time.
-/* global LAND_GEOJSON, BORDER_GEOJSON, REGION_BORDER_GEOJSON, ELEVATION_BAND_GEOJSON, CITIES, THEME */
+// LAND_GEOJSON, BORDER_GEOJSON, LAND_DETAIL_PIECES, LAND_DETAIL_BBOXES, BORDER_DETAIL_ARCS,
+// BORDER_DETAIL_BBOXES, REGION_BORDER_ARCS, REGION_BORDER_BBOXES, REGION_LABELS,
+// LAKES_MAJOR_GEOJSON, LAKES_DETAIL_GEOJSON, MOUNTAINS, RIVERS_GEOJSON, CITIES, and THEME are
+// injected as globals by the HTML wrapper at build time.
+/* global LAND_GEOJSON, BORDER_GEOJSON, LAND_DETAIL_PIECES, LAND_DETAIL_BBOXES, BORDER_DETAIL_ARCS, BORDER_DETAIL_BBOXES, REGION_BORDER_ARCS, REGION_BORDER_BBOXES, REGION_LABELS, LAKES_MAJOR_GEOJSON, LAKES_DETAIL_GEOJSON, MOUNTAINS, RIVERS_GEOJSON, CITIES, THEME */
+
+// Temporary flags — mountains and region labels are getting a hand-drawn redesign, so they're
+// switched off here rather than removed: the data pipeline, curve-fitting, and recompute logic
+// underneath are all still intact and ready to reuse once new artwork/fonts are ready, this just
+// skips drawing (and, for region labels, the recompute itself) in the meantime.
+const SHOW_MOUNTAINS = false;
+const SHOW_REGION_LABELS = false;
 
 const canvas = document.getElementById('globe');
 const ctx = canvas.getContext('2d');
@@ -12,7 +21,13 @@ const path = geoPath(projection, ctx);
 
 let width = 0;
 let height = 0;
-let dpr = Math.max(1, window.devicePixelRatio || 1);
+// Capped at 2 rather than used raw — canvas backing-store pixel count (and so every fill/stroke's
+// rasterization cost) scales with dpr squared, so an uncapped 3x device pays 2.25x the GPU work
+// of a capped-at-2 one for a difference that's imperceptible on this style of flat vector map
+// (thin lines, solid fills, no fine text at native res). This is the single biggest lever on
+// higher-end phones, where dpr is 3 or more.
+const DPR_CAP = 2;
+let dpr = Math.min(DPR_CAP, Math.max(1, window.devicePixelRatio || 1));
 
 let rotation = [10, -12]; // [lambda, phi], degrees
 let zoom = 1;
@@ -36,11 +51,6 @@ const REGION_BORDER_FADE_END = 2.2;
 // always resolves to fully opaque) — this constant only decides whether labels are eligible to
 // draw at all.
 const LABEL_MIN_ZOOM = 1.8;
-// Elevation tint starts fading in a touch before region borders, so the globe reads as flat and
-// simple at rest and gradually reveals terrain as the very first thing zooming in uncovers, ahead
-// of the border/city layers of detail.
-const ELEVATION_FADE_START = 1.3;
-const ELEVATION_FADE_END = 3.5;
 // Each city's reveal zoom is precomputed at build time from its population (see
 // build-globe-html.mjs) as CITIES[i][3]; CITY_BASE_MIN_ZOOM is just the lowest such value in the
 // dataset, used as a cheap early-out before scanning the array at all — keep this in sync with the
@@ -53,10 +63,23 @@ const ELEVATION_FADE_END = 3.5;
 // how well overlap is avoided.
 const CITY_BASE_MIN_ZOOM = 2.8;
 const CITY_MAX_LABELS = 12;
+// City/town labels use their own, slower fade duration rather than the shared LABEL_FADE_MS —
+// at 220ms (tuned for the astro line labels, which fade as a byproduct of quick, frequent
+// relayouts) a city label reads as a pop-in, not a fade, since it only ever appears once per
+// gesture rather than every frame. A longer, clearly-visible fade here also softens the effect of
+// the grid-fairness picks changing which specific town shows as the user navigates — the same
+// motion that made retained labels feel like they were "randomly popping up" before they were
+// made persistent.
+const CITY_LABEL_FADE_MS = 450;
 // See the comment in recomputeCityLabels' retained-eligibility check — this is the margin below a
 // city's own reveal threshold that zoom has to actually cross before an already-shown city drops
 // for that reason, so a sub-threshold zoom wobble doesn't read as random flicker.
 const CITY_RETAIN_HYSTERESIS = 0.4;
+// Grid used only for spatial fairness among fresh candidates (see recomputeCityLabels) — coarse
+// enough that a real region (a state, a metro area) reliably lands in its own cell or two, fine
+// enough that two genuinely distant areas sharing a screen don't get lumped into one.
+const CITY_GRID_COLS = 4;
+const CITY_GRID_ROWS = 6;
 // The full candidate scan + collision layout (recomputeCityLabels) is too expensive to run on
 // every single animation frame now that CITIES has grown to 170k+ entries — a drag gesture fires
 // render() on every pointermove, so "every frame" during an active drag was actually more like
@@ -74,6 +97,22 @@ let cityLabels = []; // [{ name, lon, lat, minZoom, left, right, top, bottom }]
 // block in renderInner for how these get drawn alongside the active set.
 let fadingOutCityLabels = []; // [{ name, lon, lat, fadeOutStartAt }]
 let baseScale = 100;
+
+// Curved region name labels (states/provinces) — laid out along the region's own line of
+// latitude (see layoutCurvedLabel) so the curve is exactly how the globe's surface actually
+// curves under the current rotation/zoom, not an arbitrary decorative arc. Same
+// retained-first/hysteresis/gesture-end-recompute/fade in-out architecture as city labels — see
+// the comment on recomputeCityLabels for why each of those pieces exists; recomputeRegionLabels
+// mirrors it directly rather than re-deriving the reasoning here.
+const REGION_LABEL_FONT = "600 20px Georgia, 'Times New Roman', serif";
+const REGION_LABEL_LETTER_SPACING_PX = 2;
+const REGION_LABEL_ASCENT = 15;
+const REGION_LABEL_DESCENT = 5;
+const REGION_LABEL_MAX_COUNT = 6;
+const REGION_LABEL_RETAIN_HYSTERESIS = 0.4;
+const REGION_LABEL_SAMPLE_STEPS = 240;
+let regionLabels = []; // [{ name, lon, lat, minZoom, glyphs: [{lon, lat, char, width}], left, right, top, bottom, fadeStartAt }]
+let fadingOutRegionLabels = []; // [{ name, glyphs, fadeOutStartAt }]
 
 let astroLines = []; // [{ bodyId, kind, color, feature }]
 let pin = null; // [lon, lat] or null
@@ -128,7 +167,7 @@ function resize() {
   const rect = canvas.getBoundingClientRect();
   width = rect.width;
   height = rect.height;
-  dpr = Math.max(1, window.devicePixelRatio || 1);
+  dpr = Math.min(DPR_CAP, Math.max(1, window.devicePixelRatio || 1));
   canvas.width = Math.round(width * dpr);
   canvas.height = Math.round(height * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -151,12 +190,40 @@ function render() {
   }
 }
 
+// The full recompute only runs at gesture end (see recomputeCityLabels), so during an active,
+// continuous zoom-out (finger still down) cityLabels still holds whatever was showing before the
+// gesture started — a screen's worth of small towns from a much deeper zoom. The per-frame draw
+// loop below only ever checked front-facing/on-screen, never each label's own zoom threshold, so
+// those stale labels just sat there at full opacity for the whole gesture, not clearing until the
+// user lifted their finger and the next recompute finally pruned them — reads as "places aren't
+// fading out on zoom out." Splitting zoom-ineligible labels into fadingOutCityLabels every frame
+// (not just at recompute) means the exact same easing-out animation recomputeCityLabels already
+// uses for a dropped label plays live, continuously, as zoom actually crosses each label's own
+// threshold — not just once the gesture happens to end.
+function fadeOutStaleCityLabels() {
+  if (cityLabels.length === 0) return;
+  const now = performance.now();
+  const stillEligible = [];
+  for (const c of cityLabels) {
+    if (zoom <= c.minZoom - CITY_RETAIN_HYSTERESIS) {
+      fadingOutCityLabels.push({ name: c.name, lon: c.lon, lat: c.lat, fadeOutStartAt: now });
+    } else {
+      stillEligible.push(c);
+    }
+  }
+  if (stillEligible.length !== cityLabels.length) cityLabels = stillEligible;
+}
+
 function renderInner() {
   projection.rotate(rotation);
   ctx.clearRect(0, 0, width, height);
+  fadeOutStaleCityLabels();
 
   const center = [width / 2, height / 2];
   const radius = baseScale * zoom;
+  // Computed once per frame and reused by every detail layer's per-piece cull check below — see
+  // visibleCapRadiusDeg/cullByBbox.
+  const capRadiusDeg = visibleCapRadiusDeg();
 
   // Ocean sphere fill with a soft radial shade for a gentle 3D feel.
   const oceanGradient = ctx.createRadialGradient(
@@ -175,34 +242,108 @@ function renderInner() {
   ctx.fillStyle = oceanGradient;
   ctx.fill();
 
-  // Land — a flat base fill first, then flat elevation-tinted bands faded in on top as the user
-  // zooms in (see elevationAlpha below), so the globe reads as simple and flat at rest and reveals
-  // terrain as a layer of detail rather than always being on. The bands also come from a different
-  // source (a downsampled elevation grid) than the coastline outline (a vector dataset), so they
-  // don't align pixel-perfectly; drawing the plain land fill underneath first means any sliver gap
-  // at the coast reveals that same land tone instead of the white ocean, rather than a visible seam.
-  ctx.beginPath();
-  path(LAND_GEOJSON);
-  ctx.fillStyle = THEME.land;
-  ctx.fill();
-  ctx.lineWidth = 0.8;
-  ctx.strokeStyle = THEME.landStroke;
-  ctx.stroke();
-
-  const elevationAlpha = clamp(
-    (zoom - ELEVATION_FADE_START) / (ELEVATION_FADE_END - ELEVATION_FADE_START),
+  // Land — a flat single-color fill, no elevation/terrain tinting. Finer coastline detail (same
+  // color) fades in on top once zoomed in: LAND_GEOJSON is a coarse (~2% simplified) always-on
+  // base so idle auto-rotation never pays for more resolution than it needs, LAND_DETAIL_PIECES
+  // is the same source simplified far less, revealing smaller islands and more accurate
+  // coastlines the coarse tier smooths away or drops entirely.
+  //
+  // The coarse tier only actually needs to draw while the detail tier is transparent or fading
+  // in — once detail reaches full opacity it completely covers the coarse shape underneath, so
+  // drawing (and clipping, the more expensive part) the coarse tier too past that point is pure
+  // wasted work. Same reasoning applies everywhere else a coarse/detail pair appears below.
+  const landDetailAlpha = clamp(
+    (zoom - REGION_BORDER_FADE_START) / (REGION_BORDER_FADE_END - REGION_BORDER_FADE_START),
     0,
     1
   );
-  if (elevationAlpha > 0) {
-    ctx.globalAlpha = elevationAlpha;
-    for (const bandFeature of ELEVATION_BAND_GEOJSON.features) {
-      ctx.beginPath();
-      path(bandFeature);
-      ctx.fillStyle = bandFeature.properties.color;
-      ctx.fill();
+  if (landDetailAlpha < 1) {
+    ctx.beginPath();
+    path(LAND_GEOJSON);
+    ctx.fillStyle = THEME.land;
+    ctx.fill();
+    ctx.lineWidth = 0.8;
+    ctx.strokeStyle = THEME.landStroke;
+    ctx.stroke();
+  }
+  if (landDetailAlpha > 0) {
+    ctx.globalAlpha = landDetailAlpha;
+    ctx.beginPath();
+    for (let i = 0; i < LAND_DETAIL_PIECES.length; i++) {
+      if (cullByBbox(LAND_DETAIL_BBOXES[i], capRadiusDeg)) {
+        path({ type: 'Polygon', coordinates: LAND_DETAIL_PIECES[i] });
+      }
     }
+    ctx.fillStyle = THEME.land;
+    ctx.fill();
+    ctx.lineWidth = 0.8;
+    ctx.strokeStyle = THEME.landStroke;
+    ctx.stroke();
     ctx.globalAlpha = 1;
+  }
+
+  // Lakes and other inland water — filled with the exact same gradient as the ocean (rather than
+  // a separate flat white) so they read as one continuous idea of "water" instead of two
+  // similar-but-not-quite-identical whites.
+  //
+  // Two tiers, same idea as region borders/cities: LAKES_MAJOR_GEOJSON (the ~400 largest lakes
+  // worldwide, at land's own coarse resolution) draws every frame unconditionally, including
+  // through continuous idle auto-rotation — cheap by design. LAKES_DETAIL_GEOJSON (~1,350 lakes,
+  // covers regionally-notable ones the major tier misses) is 10x finer and only fades in once
+  // zoomed in, so that cost is never paid at rest.
+  const lakeDetailAlpha = clamp(
+    (zoom - REGION_BORDER_FADE_START) / (REGION_BORDER_FADE_END - REGION_BORDER_FADE_START),
+    0,
+    1
+  );
+  if (lakeDetailAlpha < 1) {
+    ctx.beginPath();
+    path(LAKES_MAJOR_GEOJSON);
+    ctx.fillStyle = oceanGradient;
+    ctx.fill();
+  }
+  if (lakeDetailAlpha > 0) {
+    ctx.globalAlpha = lakeDetailAlpha;
+    ctx.beginPath();
+    for (const lakeFeature of LAKES_DETAIL_GEOJSON.features) {
+      if (cullByBbox(lakeFeature.properties.bbox, capRadiusDeg)) path(lakeFeature);
+    }
+    ctx.fillStyle = oceanGradient;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
+  // Mountain icons — a Middle-earth-map-style flourish: illustrated peaks stamped at named
+  // mountain locations (see build-globe-html.mjs) rather than left to plain terrain color. Only
+  // 633 points worldwide, so unlike cities/regions this doesn't need the gesture-end-recompute +
+  // cache architecture — a direct per-frame scan is cheap enough at this size. Drawn at a fixed
+  // pixel size regardless of zoom (translated into place, not scaled), the same "always the same
+  // size" fix applied to the region labels — simpler and more predictable than trying to size the
+  // icon to some geographic footprint.
+  if (SHOW_MOUNTAINS) {
+    for (const mountain of MOUNTAINS) {
+      const [, lon, lat, minZoom] = mountain; // name unused for now — no label yet, just the icon
+      if (zoom <= minZoom) continue;
+      if (!isFrontFacing([lon, lat])) continue;
+      const p = projection([lon, lat]);
+      if (!p || p[0] < 0 || p[0] > width || p[1] < 0 || p[1] > height) continue;
+      drawMountainIcon(p[0], p[1], mountainSeed(lon, lat));
+    }
+  }
+
+  // Rivers (and lake centerlines that continue a river's path through a lake, rather than
+  // leaving a gap). Nothing here is always-on — each feature carries its own min_zoom (Natural
+  // Earth's curated importance ranking, rescaled to our zoom scale in build-globe-html.mjs, same
+  // idea as the mountains layer), and even the biggest rivers need real zoom before showing at
+  // all, not just before showing in full detail.
+  for (const riverFeature of RIVERS_GEOJSON.features) {
+    if (zoom <= riverFeature.properties.min_zoom) continue;
+    if (!cullByBbox(riverFeature.properties.bbox, capRadiusDeg)) continue;
+    ctx.beginPath();
+    path(riverFeature);
+    ctx.lineWidth = 0.6;
+    ctx.strokeStyle = THEME.river;
+    ctx.stroke();
   }
 
   // State/province borders for every country, drawn under country borders (so the country
@@ -215,7 +356,11 @@ function renderInner() {
   );
   if (regionBorderAlpha > 0) {
     ctx.beginPath();
-    path(REGION_BORDER_GEOJSON);
+    for (let i = 0; i < REGION_BORDER_ARCS.length; i++) {
+      if (cullByBbox(REGION_BORDER_BBOXES[i], capRadiusDeg)) {
+        path({ type: 'LineString', coordinates: REGION_BORDER_ARCS[i] });
+      }
+    }
     ctx.lineWidth = 0.4;
     ctx.strokeStyle = THEME.regionBorder;
     ctx.globalAlpha = regionBorderAlpha;
@@ -223,12 +368,74 @@ function renderInner() {
     ctx.globalAlpha = 1;
   }
 
-  // Country borders.
-  ctx.beginPath();
-  path(BORDER_GEOJSON);
-  ctx.lineWidth = 0.5;
-  ctx.strokeStyle = THEME.countryBorder;
-  ctx.stroke();
+  // Region name labels — the recompute (layoutCurvedLabel/recomputeRegionLabels) only runs at
+  // gesture end, same reasoning as city labels; here we just reproject each already-placed
+  // glyph's (lon, lat) live and redraw, so the curve tracks the globe's rotation every frame
+  // without redoing the expensive parallel-sampling fit.
+  if (SHOW_REGION_LABELS && (regionLabels.length > 0 || fadingOutRegionLabels.length > 0)) {
+    ctx.font = REGION_LABEL_FONT;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = THEME.regionLabel;
+    const nowMs = performance.now();
+    const drawCurvedLabel = (glyphs, alpha) => {
+      if (alpha <= 0) return;
+      // Project every glyph first so rotation comes from real neighboring screen positions
+      // (which foreshorten with the actual projection near the limb) rather than the
+      // (lon, lat)-space neighbor, which wouldn't match what's on screen.
+      const projected = glyphs.map((g) => (isFrontFacing([g.lon, g.lat]) ? projection([g.lon, g.lat]) : null));
+      if (projected.some((p) => !p)) return; // any glyph rotated out of view — skip the whole label
+      ctx.globalAlpha = alpha;
+      for (let i = 0; i < glyphs.length; i++) {
+        const prev = projected[Math.max(i - 1, 0)];
+        const next = projected[Math.min(i + 1, glyphs.length - 1)];
+        const angle = Math.atan2(next[1] - prev[1], next[0] - prev[0]);
+        ctx.save();
+        ctx.translate(projected[i][0], projected[i][1]);
+        ctx.rotate(angle);
+        ctx.fillText(glyphs[i].char, 0, 0);
+        ctx.restore();
+      }
+    };
+    for (const c of fadingOutRegionLabels) {
+      drawCurvedLabel(c.glyphs, 1 - (nowMs - c.fadeOutStartAt) / LABEL_FADE_MS);
+    }
+    for (const c of regionLabels) {
+      drawCurvedLabel(c.glyphs, Math.min(1, (nowMs - c.fadeStartAt) / LABEL_FADE_MS));
+    }
+    ctx.globalAlpha = 1;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+  }
+
+  // Country borders — coarse tier always-on, finer tier fades in on top once zoomed in, same
+  // two-tier idea as the land/coastline detail above (including skipping the coarse tier once
+  // the detail tier is fully opaque and covering it).
+  const borderDetailAlpha = clamp(
+    (zoom - REGION_BORDER_FADE_START) / (REGION_BORDER_FADE_END - REGION_BORDER_FADE_START),
+    0,
+    1
+  );
+  if (borderDetailAlpha < 1) {
+    ctx.beginPath();
+    path(BORDER_GEOJSON);
+    ctx.lineWidth = 0.5;
+    ctx.strokeStyle = THEME.countryBorder;
+    ctx.stroke();
+  }
+  if (borderDetailAlpha > 0) {
+    ctx.beginPath();
+    for (let i = 0; i < BORDER_DETAIL_ARCS.length; i++) {
+      if (cullByBbox(BORDER_DETAIL_BBOXES[i], capRadiusDeg)) {
+        path({ type: 'LineString', coordinates: BORDER_DETAIL_ARCS[i] });
+      }
+    }
+    ctx.lineWidth = 0.5;
+    ctx.strokeStyle = THEME.countryBorder;
+    ctx.globalAlpha = borderDetailAlpha;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
 
   // City labels — deepest level of map detail, so they only start appearing well into the region
   // border's own fade range and get progressively denser the further in you go, same idea as
@@ -242,7 +449,7 @@ function renderInner() {
   // be non-empty even once zoom has dropped back to/below CITY_BASE_MIN_ZOOM (a big zoom-out can
   // drop every city label in one recompute), so the gate below checks both.
   if (zoom > CITY_BASE_MIN_ZOOM || fadingOutCityLabels.length > 0) {
-    ctx.font = '500 10px -apple-system, BlinkMacSystemFont, system-ui, sans-serif';
+    ctx.font = "italic 500 11px Georgia, 'Times New Roman', serif";
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     const nowMs = performance.now();
@@ -257,7 +464,7 @@ function renderInner() {
       const p = projection([c.lon, c.lat]);
       if (!p) continue;
       if (p[0] < 0 || p[0] > width || p[1] < 0 || p[1] > height) continue;
-      ctx.globalAlpha = Math.min(1, (nowMs - c.fadeStartAt) / LABEL_FADE_MS);
+      ctx.globalAlpha = Math.min(1, (nowMs - c.fadeStartAt) / CITY_LABEL_FADE_MS);
       ctx.beginPath();
       ctx.arc(p[0], p[1], 1.6, 0, Math.PI * 2);
       ctx.fillStyle = THEME.cityDot;
@@ -266,7 +473,7 @@ function renderInner() {
       ctx.fillText(c.name, p[0] + 5, p[1]);
     }
     for (const c of fadingOutCityLabels) {
-      const alpha = 1 - (nowMs - c.fadeOutStartAt) / LABEL_FADE_MS;
+      const alpha = 1 - (nowMs - c.fadeOutStartAt) / CITY_LABEL_FADE_MS;
       if (alpha <= 0) continue;
       if (!isFrontFacing([c.lon, c.lat])) continue;
       const p = projection([c.lon, c.lat]);
@@ -360,6 +567,73 @@ function renderInner() {
   }
 }
 
+// Deterministic hash of a mountain's own (lon, lat) into a pseudo-random integer seed — every
+// mountain gets a fixed, individually-jittered cluster shape (computed the same way every frame,
+// not re-randomized each time, which would make it crawl/flicker as the globe rotates), but
+// neighboring mountains don't all look like a stamped repeat of the same icon.
+function mountainSeed(lon, lat) {
+  const h = Math.sin(lon * 12.9898 + lat * 78.233) * 43758.5453;
+  return Math.floor((h - Math.floor(h)) * 2147483647);
+}
+
+// A hand-drawn-style mountain cluster, closer to the sketched relief symbols on old and
+// fantasy-style maps than a clean geometric icon: several overlapping peaks with irregular
+// (jittered, not perfectly triangular) outlines, shaded with hachures — short pen strokes along
+// each peak's shadowed slope — rather than a flat fill block. seed (see mountainSeed) drives a
+// small deterministic PRNG so peak count/height/width/jitter vary per mountain.
+function drawMountainIcon(x, y, seed) {
+  ctx.save();
+  ctx.translate(x, y);
+
+  let s = seed;
+  function rand() {
+    s = (s * 1103515245 + 12345) & 0x7fffffff;
+    return s / 0x7fffffff;
+  }
+
+  const peakCount = 3 + Math.floor(rand() * 3); // 3-5 peaks
+  const spread = 16;
+  ctx.lineJoin = 'round';
+  ctx.fillStyle = THEME.mountainFill;
+  ctx.strokeStyle = THEME.mountainStroke;
+
+  for (let i = 0; i < peakCount; i++) {
+    const jitter = () => (rand() - 0.5) * 1.4;
+    const baseX = -spread / 2 + (spread * i) / Math.max(peakCount - 1, 1) + jitter();
+    const isMiddlePeak = i === Math.floor(peakCount / 2);
+    const apex = 7 + rand() * 5 + (isMiddlePeak ? 3 : 0);
+    const halfWidth = 3.5 + rand() * 2;
+
+    // An irregular silhouette — five jittered points rather than a clean three-point triangle,
+    // sketched as straight segments rather than a smooth curve, mimicking a quick pen outline.
+    ctx.beginPath();
+    ctx.moveTo(baseX - halfWidth, 0);
+    ctx.lineTo(baseX - halfWidth * 0.45 + jitter(), -apex * 0.5 + jitter());
+    ctx.lineTo(baseX + jitter(), -apex);
+    ctx.lineTo(baseX + halfWidth * 0.5 + jitter(), -apex * 0.45 + jitter());
+    ctx.lineTo(baseX + halfWidth, 0);
+    ctx.closePath();
+    ctx.lineWidth = 0.9;
+    ctx.fill();
+    ctx.stroke();
+
+    // Hachures — a few short strokes climbing the shadowed (right) side of the peak, the classic
+    // pen-and-ink technique for suggesting a slope's form without a flat tone.
+    ctx.lineWidth = 0.6;
+    ctx.beginPath();
+    for (let h = 1; h <= 3; h++) {
+      const t = h / 4;
+      const hx = baseX + halfWidth * (0.15 + t * 0.5);
+      const hy = -apex * (0.85 - t * 0.7);
+      ctx.moveTo(hx, hy);
+      ctx.lineTo(hx + 1.6, hy + 2.4);
+    }
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
 function hexToRgba(hex, alpha) {
   const r = parseInt(hex.slice(1, 3), 16);
   const g = parseInt(hex.slice(3, 5), 16);
@@ -387,6 +661,49 @@ function isFrontFacing([lon, lat]) {
   const phi = lat * toRad;
   const cosc = Math.sin(phi0) * Math.sin(phi) + Math.cos(phi0) * Math.cos(phi) * Math.cos(lambda - lambda0);
   return cosc > 0;
+}
+
+function angularDistanceDeg(lon1, lat1, lon2, lat2) {
+  const toRad = Math.PI / 180;
+  const p1 = lat1 * toRad;
+  const p2 = lat2 * toRad;
+  const cosc = Math.sin(p1) * Math.sin(p2) + Math.cos(p1) * Math.cos(p2) * Math.cos((lon2 - lon1) * toRad);
+  return (Math.acos(clamp(cosc, -1, 1)) * 180) / Math.PI;
+}
+
+// Once zoomed in enough that the canvas shows only a slice of the front hemisphere, most of a
+// detail layer's geometry (land-detail polygons, border/region-border arcs, rivers, lakes) is
+// still technically "front-facing" by isFrontFacing's hemisphere test but projects way outside the
+// canvas — full path tracing (project every point, emit canvas path commands) still happens for
+// all of it every frame otherwise, for zero visible benefit. capRadiusDeg (see
+// visibleCapRadiusDeg) is the farthest angular distance from the current look-at point that can
+// possibly land inside the canvas rectangle; a piece whose own bbox is farther than that, plus its
+// own angular size and a safety margin, can only be off-screen. Below the zoom where the canvas
+// already shows the whole front hemisphere, capRadiusDeg is 90 and nothing gets culled — there's
+// nothing to gain and every early-return here is a no-op.
+function visibleCapRadiusDeg() {
+  const halfDiagonal = Math.sqrt((width / 2) ** 2 + (height / 2) ** 2);
+  const radius = baseScale * zoom;
+  if (halfDiagonal >= radius) return 90;
+  return (Math.asin(Math.min(1, halfDiagonal / radius)) * 180) / Math.PI;
+}
+
+// Margin is generous and additive, not multiplicative — a false negative here (treating something
+// truly on-screen as culled) is a real visual bug, a false positive (tracing something that turns
+// out to be just off-screen) is only ever a little wasted work. bbox is null for anything that
+// wrapped the antimeridian at build time (see bboxOf in build-globe-html.mjs) or has no precomputed
+// bbox at all — both treated as always-visible.
+const CULL_MARGIN_DEG = 15;
+function cullByBbox(bbox, capRadiusDeg) {
+  if (!bbox || capRadiusDeg >= 90) return true;
+  const [minLon, minLat, maxLon, maxLat] = bbox;
+  const centerLon = (minLon + maxLon) / 2;
+  const centerLat = (minLat + maxLat) / 2;
+  const bboxRadius = Math.max(maxLon - minLon, maxLat - minLat) / 2;
+  const lookLon = -rotation[0];
+  const lookLat = -rotation[1];
+  const dist = angularDistanceDeg(centerLon, centerLat, lookLon, lookLat);
+  return dist - bboxRadius <= capRadiusDeg + CULL_MARGIN_DEG;
 }
 
 // A line label's current screen-space pill box, re-derived live every frame from its geographic
@@ -451,7 +768,7 @@ function hitTestLine(x, y) {
 // visible area or zoom has dropped back below its own reveal threshold — zooming out is the one
 // case where losing labels is expected.
 function recomputeCityLabels() {
-  ctx.font = '500 10px -apple-system, BlinkMacSystemFont, system-ui, sans-serif';
+  ctx.font = "italic 500 11px Georgia, 'Times New Roman', serif";
   const now = performance.now();
 
   const retained = [];
@@ -495,7 +812,6 @@ function recomputeCityLabels() {
     if (p[0] < 0 || p[0] > width || p[1] < 0 || p[1] > height) continue;
     candidates.push({ name, lon, lat, minZoom, x: p[0], y: p[1] });
   }
-  candidates.sort((a, b) => a.minZoom - b.minZoom);
 
   // A fixed grid cell doesn't account for actual text width — a long name overlaps its
   // neighbor regardless of which cell each dot falls in. Real bounding-box collision, checked
@@ -512,18 +828,139 @@ function recomputeCityLabels() {
   // leaves sparser areas untouched (nothing there was close enough to collide either way).
   const placed = [];
   function tryPlace(c, fadeStartAt) {
-    if (placed.length >= CITY_MAX_LABELS) return;
+    if (placed.length >= CITY_MAX_LABELS) return false;
     const textWidth = ctx.measureText(c.name).width;
     const left = c.x - 4;
     const right = c.x + 5 + textWidth + 10;
     const top = c.y - 9;
     const bottom = c.y + 9;
     const collides = placed.some((p) => !(right < p.left || left > p.right || bottom < p.top || top > p.bottom));
-    if (collides) return;
+    if (collides) return false;
     placed.push({ name: c.name, lon: c.lon, lat: c.lat, minZoom: c.minZoom, left, right, top, bottom, fadeStartAt });
+    return true;
   }
-  for (const c of retained) tryPlace(c, c.fadeStartAt);
-  for (const c of candidates) tryPlace(c, now);
+  // Once a label is showing, it must never disappear just from the user panning or zooming in
+  // further, only from zooming back out past its own threshold (already filtered into `retained`
+  // above) or leaving the screen, matching how Apple/Google Maps labels behave — so retained
+  // cities skip the collision check entirely (rotating the globe shifts each point's screen
+  // position independently, so two labels that didn't collide a moment ago could newly overlap
+  // after a pan, and whichever got checked second would silently drop otherwise).
+  //
+  // But CITY_MAX_LABELS still has to bind on the TOTAL — retained ones included — or panning
+  // across a long stretch of real, individually-qualifying towns at a fixed zoom (no zoom-out to
+  // ever trigger a drop) just accumulates them without limit, which is exactly the wall-of-
+  // overlapping-text this cap exists to prevent. When retained alone outgrows the cap, the least
+  // significant ones (highest minZoom, i.e. smallest population) are the ones that give way —
+  // they still ease out through the normal fade, just triggered by running out of room rather
+  // than a zoom or screen-edge boundary. `retained` is already sorted by minZoom above, so this is
+  // a plain slice.
+  const keptRetained = retained.slice(0, CITY_MAX_LABELS);
+  for (const c of keptRetained) {
+    const textWidth = ctx.measureText(c.name).width;
+    placed.push({
+      name: c.name,
+      lon: c.lon,
+      lat: c.lat,
+      minZoom: c.minZoom,
+      left: c.x - 4,
+      right: c.x + 5 + textWidth + 10,
+      top: c.y - 9,
+      bottom: c.y + 9,
+      fadeStartAt: c.fadeStartAt,
+    });
+  }
+
+  function cellKeyOf(c) {
+    const col = clamp(Math.floor((c.x / width) * CITY_GRID_COLS), 0, CITY_GRID_COLS - 1);
+    const row = clamp(Math.floor((c.y / height) * CITY_GRID_ROWS), 0, CITY_GRID_ROWS - 1);
+    return col + ',' + row;
+  }
+
+  // A flat population-priority sort here lets a dense, populous area (Hartford/Springfield/
+  // Worcester) claim every remaining slot before a real but less-populous area sharing the same
+  // screen (Vermont) ever gets a turn. Bucketing fresh candidates into a coarse grid and
+  // round-robining across cells (each cell's best remaining candidate before any cell's second)
+  // means every part of the visible screen gets a shot at the room left over after retained
+  // labels, before any one part gets a second. Cells already covered by a retained label count
+  // as fulfilled too.
+  const cellsFulfilled = new Set(keptRetained.map(cellKeyOf));
+  const cellBuckets = new Map();
+  for (const c of candidates) {
+    const key = cellKeyOf(c);
+    if (!cellBuckets.has(key)) cellBuckets.set(key, []);
+    cellBuckets.get(key).push(c);
+  }
+
+  // Fairness among real candidates only helps when every cell actually has one to put forward.
+  // Vermont's biggest town is genuinely smaller than Hartford/Worcester/Springfield, so at a zoom
+  // where those neighbors have just crossed their own population threshold, Vermont's hasn't
+  // crossed its own yet — its cell never had an entry in `candidates` to begin with, so no amount
+  // of round-robining among real candidates touches it. Giving that cell's single biggest place a
+  // bucket of its own (one entry) lets it compete in the SAME round 1 as every other cell's first
+  // pick — the fix that matters is making sure this runs before the main round-robin below, not
+  // after: running it only once cap room happened to survive every other cell's second and third
+  // picks (the previous approach) meant a fully-populated screen elsewhere could exhaust the cap
+  // before an empty cell ever got a turn, which is exactly what kept happening.
+  if (zoom > CITY_BASE_MIN_ZOOM) {
+    const fallbackBest = new Map();
+    for (const city of CITIES) {
+      const [name, lon, lat, minZoom] = city;
+      if (zoom > minZoom) continue; // already a real candidate above, no fallback needed
+      if (retainedKeys.has(name + '|' + lon + '|' + lat)) continue;
+      if (!isFrontFacing([lon, lat])) continue;
+      const p = projection([lon, lat]);
+      if (!p) continue;
+      if (p[0] < 0 || p[0] > width || p[1] < 0 || p[1] > height) continue;
+      const key = cellKeyOf({ x: p[0], y: p[1] });
+      if (cellsFulfilled.has(key) || cellBuckets.has(key)) continue;
+      const existing = fallbackBest.get(key);
+      if (!existing || minZoom < existing.minZoom) {
+        fallbackBest.set(key, { name, lon, lat, minZoom, x: p[0], y: p[1] });
+      }
+    }
+    for (const [key, c] of fallbackBest) cellBuckets.set(key, [c]);
+  }
+
+  const buckets = [...cellBuckets.entries()];
+  for (const [, bucket] of buckets) bucket.sort((a, b) => a.minZoom - b.minZoom);
+
+  // Round 1 (breadth): every occupied cell — real candidate or Vermont-style fallback — gets a
+  // shot at its single best pick before any cell gets a second (round 2 below). Letting this
+  // round ignore CITY_MAX_LABELS entirely was tried and made things worse the other direction: 20+
+  // simultaneously-occupied cells (a wide, genuinely dense stretch of coastline, say) each placing
+  // one label unconditionally blew straight past the cap, right back to the wall-of-overlapping-
+  // text problem. The cap has to bind here too — the fix that actually matters is HOW cells get
+  // cut off once it does. Iterating buckets in raw insertion order (tried before this) let Rutland
+  // lose a slot to North Adams for no reason related to which was the better candidate — purely
+  // because North Adams' cell came first in iteration order when the 12th slot ran out. Sorting
+  // this round's candidates by minZoom first means that when the cap forces a cutoff, it's the
+  // objectively weaker candidates (smaller places, or fallback picks further from their own
+  // threshold) that miss out, not whichever cell happened to be enumerated first — still exactly
+  // one shot per cell, just prioritized instead of arbitrary.
+  const roundOnePicks = buckets
+    .filter(([, bucket]) => bucket.length > 0)
+    .map(([key, bucket]) => ({ key, item: bucket[0] }))
+    .sort((a, b) => a.item.minZoom - b.item.minZoom);
+  for (const { key, item } of roundOnePicks) {
+    cellBuckets.get(key).shift();
+    if (tryPlace(item, now)) cellsFulfilled.add(key);
+  }
+
+  // Round 2+ (depth, capped): a cell dense enough to have more than one real candidate can add
+  // more, but only up to CITY_MAX_LABELS total — this is the cap doing its actual job, limiting
+  // how much any one busy area can pile on top of the one-per-area guarantee above.
+  let remaining = 0;
+  for (const [, bucket] of buckets) remaining += bucket.length;
+  let bucketIndex = 0;
+  while (remaining > 0 && placed.length < CITY_MAX_LABELS && buckets.length > 0) {
+    const [key, bucket] = buckets[bucketIndex % buckets.length];
+    bucketIndex++;
+    if (bucket.length > 0) {
+      const c = bucket.shift();
+      if (tryPlace(c, now)) cellsFulfilled.add(key);
+      remaining--;
+    }
+  }
 
   // Anything that was showing a moment ago but didn't make it into `placed` this round eases out
   // instead of vanishing outright — see fadingOutCityLabels' declaration and its draw loop in
@@ -534,10 +971,191 @@ function recomputeCityLabels() {
     .filter((c) => !placedKeys.has(c.name + '|' + c.lon + '|' + c.lat))
     .map((c) => ({ name: c.name, lon: c.lon, lat: c.lat, fadeOutStartAt: now }));
   fadingOutCityLabels = fadingOutCityLabels
-    .filter((c) => now - c.fadeOutStartAt < LABEL_FADE_MS)
+    .filter((c) => now - c.fadeOutStartAt < CITY_LABEL_FADE_MS)
     .concat(freshlyDropped);
 
   cityLabels = placed;
+}
+
+// Standard spherical "destination point given distance and bearing" formula — walks a great
+// circle from (lon0, lat0), bearingDeg clockwise from north, distDeg degrees of arc along it.
+// This is what lets layoutCurvedLabel sample along the region's own major axis (any bearing)
+// instead of only ever due east-west along a parallel: same idea (a real spherical curve that
+// projects and re-curves correctly under rotation), generalized to an arbitrary direction.
+function destinationPoint(lon0, lat0, bearingDeg, distDeg) {
+  const toRad = Math.PI / 180;
+  const toDeg = 180 / Math.PI;
+  const lat1 = lat0 * toRad;
+  const theta = bearingDeg * toRad;
+  const delta = distDeg * toRad;
+  const sinLat2 = Math.sin(lat1) * Math.cos(delta) + Math.cos(lat1) * Math.sin(delta) * Math.cos(theta);
+  const lat2 = Math.asin(clamp(sinLat2, -1, 1));
+  const y = Math.sin(theta) * Math.sin(delta) * Math.cos(lat1);
+  const x = Math.cos(delta) - Math.sin(lat1) * sinLat2;
+  const lon2 = lon0 * toRad + Math.atan2(y, x);
+  return [lon2 * toDeg, lat2 * toDeg];
+}
+
+// How pronounced the artistic bow is, as a fraction of the label's own half-span. A real
+// great-circle arc over a modest span barely bends once projected — geographically correct, but
+// reads as "sitting on a flat line" rather than a hand-lettered map label. This is deliberately
+// NOT derived from the region's actual geography (unlike the bearing and span, which are) — it's
+// a fixed decorative curve on top of the straight axis, same spirit as the exaggerated arcs on
+// the Middle-earth map.
+const REGION_LABEL_BOW_FACTOR = 0.3;
+// The label's angular footprint is a fixed fraction of the region's own measured extent along its
+// major axis (majorSpanDeg, from build time), not re-derived from the current zoom/pixel-width
+// target the way an earlier version worked. That dynamic approach kept trying to hit an exact
+// pixel width every recompute, which is sensitive to foreshortening near the globe's limb (the
+// same degree span covers fewer real pixels there than near the sub-point) and could pick a
+// meaningfully different curve span from one recompute to the next — labels that visibly changed
+// size, or failed to fit at all, for reasons that weren't obvious just looking at the screen. A
+// fixed geographic footprint sidesteps both: the label simply doesn't show until zoomed in enough
+// for that fixed span to comfortably fit the text, and zooming in deeper only ever helps (more
+// pixels across the same span) — a plain, monotonic reveal, with about half the per-candidate
+// cost too, since there's no more oversample-then-search, just one pass over exactly the span
+// that'll be used.
+const REGION_LABEL_SPAN_FRACTION = 0.8;
+
+// Fits `name` (rendered upper-case, letter-spaced, bowed for visible curvature) along the great
+// circle through (lon0, lat0) at bearingDeg — the region's own major axis (see regionOrientation
+// in build-globe-html.mjs) — spanning majorSpanDeg * REGION_LABEL_SPAN_FRACTION, a fixed
+// geographic footprint rather than one re-fit to the current zoom. Gives up (returns null) if any
+// sample lands off screen or the fixed span doesn't yet contain enough on-screen pixel distance
+// for the text — same "skip rather than force it" choice layoutLabels makes for astro line
+// labels; the region simply appears once zoomed in enough rather than trying to always show at a
+// possibly-illegible size. Each glyph keeps its own (lon, lat) anchor (interpolated along the
+// bowed arc, not a cached screen position), so the caller can re-project — and therefore re-curve
+// — live every frame as the globe rotates, rather than freezing the curve's shape at layout time.
+function layoutCurvedLabel(name, lon0, lat0, bearingDeg, majorSpanDeg) {
+  ctx.font = REGION_LABEL_FONT;
+  const chars = [...name.toUpperCase()];
+  const charWidths = chars.map((ch) => ctx.measureText(ch).width);
+  const totalTextWidth =
+    charWidths.reduce((a, b) => a + b, 0) + REGION_LABEL_LETTER_SPACING_PX * (chars.length - 1);
+
+  const spanDeg = majorSpanDeg * REGION_LABEL_SPAN_FRACTION;
+  const halfSpanDeg = spanDeg / 2;
+
+  const segment = [];
+  for (let i = 0; i <= REGION_LABEL_SAMPLE_STEPS; i++) {
+    const distDeg = -halfSpanDeg + (spanDeg * i) / REGION_LABEL_SAMPLE_STEPS;
+    const t = halfSpanDeg > 0 ? distDeg / halfSpanDeg : 0;
+    const bowDeg = REGION_LABEL_BOW_FACTOR * halfSpanDeg * (1 - t * t);
+    const [midLon, midLat] = destinationPoint(lon0, lat0, bearingDeg, distDeg);
+    const [lon, lat] = destinationPoint(midLon, midLat, bearingDeg + 90, bowDeg);
+    if (!isFrontFacing([lon, lat])) return null; // any point off screen — not zoomed in enough yet
+    const p = projection([lon, lat]);
+    if (!p || p[0] < 0 || p[0] > width || p[1] < 0 || p[1] > height) return null;
+    segment.push({ lon, lat, x: p[0], y: p[1] });
+  }
+
+  const cum = [0];
+  for (let i = 1; i < segment.length; i++) {
+    cum.push(cum[i - 1] + Math.hypot(segment[i].x - segment[i - 1].x, segment[i].y - segment[i - 1].y));
+  }
+  const totalDist = cum[cum.length - 1];
+  if (totalDist < totalTextWidth) return null; // fixed span doesn't have enough pixels yet
+  const startOffset = (totalDist - totalTextWidth) / 2; // centers the text within the fixed span
+
+  const glyphs = [];
+  let left = Infinity;
+  let right = -Infinity;
+  let top = Infinity;
+  let bottom = -Infinity;
+  let advance = startOffset;
+  for (let ci = 0; ci < chars.length; ci++) {
+    const charCenterDist = advance + charWidths[ci] / 2;
+    let idx = 0;
+    while (idx < cum.length - 2 && cum[idx + 1] < charCenterDist) idx++;
+    const segLen = cum[idx + 1] - cum[idx];
+    const t = segLen > 0 ? clamp((charCenterDist - cum[idx]) / segLen, 0, 1) : 0;
+    const lon = segment[idx].lon + (segment[idx + 1].lon - segment[idx].lon) * t;
+    const lat = segment[idx].lat + (segment[idx + 1].lat - segment[idx].lat) * t;
+    const x = segment[idx].x + (segment[idx + 1].x - segment[idx].x) * t;
+    const y = segment[idx].y + (segment[idx + 1].y - segment[idx].y) * t;
+    glyphs.push({ lon, lat, char: chars[ci], width: charWidths[ci] });
+    left = Math.min(left, x - charWidths[ci] / 2);
+    right = Math.max(right, x + charWidths[ci] / 2);
+    top = Math.min(top, y - REGION_LABEL_ASCENT);
+    bottom = Math.max(bottom, y + REGION_LABEL_DESCENT);
+    advance += charWidths[ci] + REGION_LABEL_LETTER_SPACING_PX;
+  }
+  return { glyphs, left, right, top, bottom };
+}
+
+// Same retained-first/hysteresis/collision/fade architecture as recomputeCityLabels — see its
+// comment for the reasoning — adapted for curved labels: a "candidate" only becomes placeable
+// once layoutCurvedLabel actually fits it, and the collision box is the curved label's own
+// glyph-spanning bounding box rather than a simple rectangle at one anchor point.
+function recomputeRegionLabels() {
+  const now = performance.now();
+
+  const retained = [];
+  const retainedKeys = new Set();
+  for (const r of regionLabels) {
+    if (zoom <= r.minZoom - REGION_LABEL_RETAIN_HYSTERESIS) continue;
+    const layout = layoutCurvedLabel(r.name, r.lon, r.lat, r.bearingDeg, r.majorSpanDeg);
+    if (!layout) continue;
+    retained.push({
+      name: r.name,
+      lon: r.lon,
+      lat: r.lat,
+      minZoom: r.minZoom,
+      bearingDeg: r.bearingDeg,
+      majorSpanDeg: r.majorSpanDeg,
+      fadeStartAt: r.fadeStartAt,
+      ...layout,
+    });
+    retainedKeys.add(r.name + '|' + r.lon + '|' + r.lat);
+  }
+  retained.sort((a, b) => a.minZoom - b.minZoom);
+
+  const candidates = [];
+  for (const region of REGION_LABELS) {
+    const [name, lon, lat, minZoom, bearingDeg, majorSpanDeg] = region;
+    if (zoom <= minZoom) continue;
+    if (retainedKeys.has(name + '|' + lon + '|' + lat)) continue;
+    if (!isFrontFacing([lon, lat])) continue;
+    candidates.push({ name, lon, lat, minZoom, bearingDeg, majorSpanDeg });
+  }
+  candidates.sort((a, b) => a.minZoom - b.minZoom);
+
+  const placed = [];
+  function tryPlace(c, fadeStartAt) {
+    if (placed.length >= REGION_LABEL_MAX_COUNT) return;
+    const layout = c.glyphs ? c : layoutCurvedLabel(c.name, c.lon, c.lat, c.bearingDeg, c.majorSpanDeg);
+    if (!layout) return;
+    const { left, right, top, bottom } = layout;
+    const collides = placed.some((p) => !(right < p.left || left > p.right || bottom < p.top || top > p.bottom));
+    if (collides) return;
+    placed.push({
+      name: c.name,
+      lon: c.lon,
+      lat: c.lat,
+      minZoom: c.minZoom,
+      bearingDeg: c.bearingDeg,
+      majorSpanDeg: c.majorSpanDeg,
+      glyphs: layout.glyphs,
+      left,
+      right,
+      top,
+      bottom,
+      fadeStartAt,
+    });
+  }
+  for (const c of retained) tryPlace(c, c.fadeStartAt);
+  for (const c of candidates) tryPlace(c, now);
+
+  const placedKeys = new Set(placed.map((c) => c.name + '|' + c.lon + '|' + c.lat));
+  const freshlyDropped = regionLabels
+    .filter((c) => !placedKeys.has(c.name + '|' + c.lon + '|' + c.lat))
+    .map((c) => ({ name: c.name, glyphs: c.glyphs, fadeOutStartAt: now }));
+  fadingOutRegionLabels = fadingOutRegionLabels
+    .filter((c) => now - c.fadeOutStartAt < LABEL_FADE_MS)
+    .concat(freshlyDropped);
+
+  regionLabels = placed;
 }
 
 // Greedily nudges each label upward past any already-placed label its bounding box would
@@ -783,9 +1401,12 @@ function tick(now) {
   // redraw — matters most for city labels, since a fade starts right at gesture end, when nothing
   // else is left to keep triggering renders.
   const cityFading =
-    cityLabels.some((c) => now - c.fadeStartAt < LABEL_FADE_MS) ||
-    fadingOutCityLabels.some((c) => now - c.fadeOutStartAt < LABEL_FADE_MS);
-  const fading = now - labelsFadeStartAt < LABEL_FADE_MS || cityFading;
+    cityLabels.some((c) => now - c.fadeStartAt < CITY_LABEL_FADE_MS) ||
+    fadingOutCityLabels.some((c) => now - c.fadeOutStartAt < CITY_LABEL_FADE_MS);
+  const regionLabelFading =
+    regionLabels.some((c) => now - c.fadeStartAt < LABEL_FADE_MS) ||
+    fadingOutRegionLabels.some((c) => now - c.fadeOutStartAt < LABEL_FADE_MS);
+  const fading = now - labelsFadeStartAt < LABEL_FADE_MS || cityFading || regionLabelFading;
   if (idle || fading) {
     render();
   }
@@ -877,6 +1498,7 @@ function onPointerUp(e) {
   if (pointers.size === 0) {
     recomputeLabels();
     recomputeCityLabels();
+    if (SHOW_REGION_LABELS) recomputeRegionLabels();
     render();
   }
 }
