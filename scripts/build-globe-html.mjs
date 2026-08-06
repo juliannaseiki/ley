@@ -338,6 +338,24 @@ const cities = JSON.parse(fs.readFileSync(path.join(root, 'scripts/data/cities.j
   ([name, lon, lat, population]) => [name, lon, lat, minZoomForPopulation(population)]
 );
 
+// A coarse lon/lat grid over `cities`, so the renderer can look up "what's near this point on the
+// globe" without scanning all 170k+ entries — see webview-src/city-labels/spatialIndex.js for the
+// runtime query side. Built here, once, rather than at runtime on WebView load: bucketing by index
+// (not by copying each city's data into every cell) keeps the injected payload small, and a city's
+// position in `cities` is already stable — the array is written straight through in source order
+// and never reordered — so "index into `cities`" doubles as a perfectly good stable id for the
+// label state machine (selection.js/stateMachine.js) without needing a separate id field.
+const CITY_CELL_SIZE_DEG = 10;
+const cityCells = new Map();
+cities.forEach(([, lon, lat], index) => {
+  const col = Math.floor((lon + 180) / CITY_CELL_SIZE_DEG);
+  const row = Math.floor((lat + 90) / CITY_CELL_SIZE_DEG);
+  const key = col + ',' + row;
+  if (!cityCells.has(key)) cityCells.set(key, []);
+  cityCells.get(key).push(index);
+});
+const cityCellsObj = Object.fromEntries(cityCells);
+
 // Inland water — lakes and other bodies of water, filled the same white as the ocean so they
 // read as "water" rather than land-colored gaps. world-atlas's land layer doesn't carve lakes
 // out as holes at all (too coarse a resolution to bother), so this is its own source: Natural
@@ -442,6 +460,8 @@ window.LAKES_DETAIL_GEOJSON = ${JSON.stringify(lakesDetailGeoJson)};
 window.MOUNTAINS = ${JSON.stringify(mountains)};
 window.RIVERS_GEOJSON = ${JSON.stringify(riversGeoJson)};
 window.CITIES = ${JSON.stringify(cities)};
+window.CITY_CELLS = ${JSON.stringify(cityCellsObj)};
+window.CITY_CELL_SIZE_DEG = ${JSON.stringify(CITY_CELL_SIZE_DEG)};
 window.THEME = ${JSON.stringify(theme)};
 </script>
 <script>
