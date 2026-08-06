@@ -55,6 +55,35 @@ function rewindGeometry(geometry) {
   else if (geometry.type === 'MultiPolygon') geometry.coordinates.forEach(rewindPolygonCoords);
 }
 
+// Bounding box (lon/lat) for one drawable piece — a river, a lake, one arc of a border mesh, one
+// polygon of the merged landmass — so the renderer can skip projecting/tracing it entirely once
+// zoomed in far enough that it's nowhere near what's on screen (see cullByBbox in
+// webview-src/globe-entry.js). Works on a ring, a polygon's rings, or a whole MultiPolygon's
+// coordinates indifferently — it just walks however deep the array nests until it hits [lon, lat]
+// leaves. A piece whose longitude span comes out over 180° almost certainly wrapped around the
+// antimeridian rather than genuinely spanning half the globe (-explode keeps individual
+// landmasses/arcs small, so a legitimate piece that wide would be unusual) — treating that as
+// "always visible" rather than computing a meaningless center point is the safe fallback: it costs
+// a bit of unneeded drawing, never a wrongly-hidden feature.
+function accumulateBounds(node, bounds) {
+  if (typeof node[0] === 'number') {
+    const [lon, lat] = node;
+    if (lon < bounds.minLon) bounds.minLon = lon;
+    if (lon > bounds.maxLon) bounds.maxLon = lon;
+    if (lat < bounds.minLat) bounds.minLat = lat;
+    if (lat > bounds.maxLat) bounds.maxLat = lat;
+  } else {
+    for (const child of node) accumulateBounds(child, bounds);
+  }
+}
+function bboxOf(coordinates) {
+  const bounds = { minLon: Infinity, minLat: Infinity, maxLon: -Infinity, maxLat: -Infinity };
+  accumulateBounds(coordinates, bounds);
+  if (bounds.minLon === Infinity || bounds.maxLon - bounds.minLon > 180) return null;
+  const round3 = (n) => Math.round(n * 1e3) / 1e3;
+  return [round3(bounds.minLon), round3(bounds.minLat), round3(bounds.maxLon), round3(bounds.maxLat)];
+}
+
 // Land and country borders, two tiers, same idea as lakes/region borders/cities — a coarse layer
 // that's always drawn, and a finer layer that only costs anything once zoomed in. world-atlas's
 // land-110m/countries-110m (the previous source) don't carve out anything smaller than a large
@@ -94,6 +123,22 @@ function loadCountries(fileName) {
 const { landGeoJson, borderGeoJson } = loadCountries('countries-coarse.json');
 const { landGeoJson: landDetailGeoJson, borderGeoJson: borderDetailGeoJson } = loadCountries('countries-detail.json');
 
+// Split the detail tiers' single merged geometries into individually-cullable pieces, each paired
+// with its own bbox — see bboxOf above and cullByBbox in webview-src/globe-entry.js. Only the
+// detail tiers need this: the coarse tiers stay always-on but are only ever drawn below
+// REGION_BORDER_FADE_END (zoom 2.2, see renderInner), where the whole front hemisphere still fits
+// on screen and there's nothing to cull anyway. landDetailGeoJson.geometry is one MultiPolygon
+// (merge() unions every country into a single shape) — each polygon in it becomes its own piece.
+// borderDetailGeoJson is a single MultiLineString from mesh() — each arc becomes its own piece.
+function polygonPiecesOf(geometry) {
+  if (!geometry) return { pieces: [], bboxes: [] };
+  const polygons = geometry.type === 'MultiPolygon' ? geometry.coordinates : [geometry.coordinates];
+  return { pieces: polygons, bboxes: polygons.map(bboxOf) };
+}
+const { pieces: landDetailPieces, bboxes: landDetailBboxes } = polygonPiecesOf(landDetailGeoJson.geometry);
+const borderDetailArcs = borderDetailGeoJson.coordinates;
+const borderDetailBboxes = borderDetailArcs.map(bboxOf);
+
 // State/province-level boundaries for every country, not just the US. world-atlas/us-atlas only
 // bundle country-level and US-only data respectively; no npm package wraps Natural Earth's global
 // admin-1 set, so this is our own locally-committed conversion. Source: Natural Earth's
@@ -117,6 +162,11 @@ const regionBorderGeoJson = mesh(
   regionsObject,
   (a, b) => a.properties.name + '|' + a.properties.admin !== b.properties.name + '|' + b.properties.admin
 );
+// Same per-arc bbox split as the country border mesh above — this is the layer the "8,535
+// exploded features add up" comment is about, so it's the one that benefits most from being able
+// to skip most of its arcs once zoomed in on one small area.
+const regionBorderArcs = regionBorderGeoJson.coordinates;
+const regionBorderBboxes = regionBorderArcs.map(bboxOf);
 
 // Curved region name labels (states/provinces) — one per named region, not per exploded piece:
 // grouping by name+admin and picking the largest piece's centroid means an archipelago province's
@@ -253,6 +303,14 @@ const mountains = JSON.parse(fs.readFileSync(path.join(root, 'scripts/data/mount
 // clipping to get backwards — no winding fix needed here.
 const riversTopology = JSON.parse(fs.readFileSync(path.join(root, 'scripts/data/rivers.json'), 'utf8'));
 const riversGeoJson = feature(riversTopology, riversTopology.objects['rivers-merged']);
+// A bbox per river, same reasoning as the border/land pieces above — cullByBbox in
+// webview-src/globe-entry.js uses this alongside the existing per-feature min_zoom check so a
+// river that has crossed its reveal threshold but sits nowhere near the current view still skips
+// tracing, not just the (much rarer) ones that haven't reached their threshold at all.
+riversGeoJson.features = riversGeoJson.features.filter((f) => f.geometry);
+riversGeoJson.features.forEach((f) => {
+  f.properties.bbox = bboxOf(f.geometry.coordinates);
+});
 
 // City/town labels, shown at deep zoom. Source: GeoNames' cities1000 dump (every populated place
 // with population >= 1,000 - https://download.geonames.org/export/dump/cities1000.zip), reduced
@@ -325,14 +383,18 @@ const lakesMajorGeoJson = loadLakes('lakes-major.json', 'ne_50m_lakes');
 // every lake that happened to also appear (usually less accurately) in the coarse tier — worse
 // trade than the extra draw cost, which only applies once actually zoomed in anyway.
 const lakesDetailGeoJson = loadLakes('lakes-detail.json', 'ne_10m_lakes');
+// Bbox per lake, same reasoning as the other detail tiers — see bboxOf above.
+lakesDetailGeoJson.features.forEach((f) => {
+  f.properties.bbox = bboxOf(f.geometry.coordinates);
+});
 
 const theme = {
   oceanLight: '#FFFFFF',
   oceanDeep: '#FFFFFF',
   land: '#F4FAF2',
   landStroke: '#DCEEDA',
-  countryBorder: '#7FAE87',
-  regionBorder: '#AACDAF',
+  countryBorder: '#cde2d0',
+  regionBorder: '#c9decc',
   globeOutline: '#EAF3FA',
   pin: '#28312C',
   cityDot: '#8FA396',
@@ -368,9 +430,12 @@ const html = `<!DOCTYPE html>
 <script>
 window.LAND_GEOJSON = ${JSON.stringify(landGeoJson)};
 window.BORDER_GEOJSON = ${JSON.stringify(borderGeoJson)};
-window.LAND_DETAIL_GEOJSON = ${JSON.stringify(landDetailGeoJson)};
-window.BORDER_DETAIL_GEOJSON = ${JSON.stringify(borderDetailGeoJson)};
-window.REGION_BORDER_GEOJSON = ${JSON.stringify(regionBorderGeoJson)};
+window.LAND_DETAIL_PIECES = ${JSON.stringify(landDetailPieces)};
+window.LAND_DETAIL_BBOXES = ${JSON.stringify(landDetailBboxes)};
+window.BORDER_DETAIL_ARCS = ${JSON.stringify(borderDetailArcs)};
+window.BORDER_DETAIL_BBOXES = ${JSON.stringify(borderDetailBboxes)};
+window.REGION_BORDER_ARCS = ${JSON.stringify(regionBorderArcs)};
+window.REGION_BORDER_BBOXES = ${JSON.stringify(regionBorderBboxes)};
 window.REGION_LABELS = ${JSON.stringify(regionLabels)};
 window.LAKES_MAJOR_GEOJSON = ${JSON.stringify(lakesMajorGeoJson)};
 window.LAKES_DETAIL_GEOJSON = ${JSON.stringify(lakesDetailGeoJson)};

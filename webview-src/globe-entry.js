@@ -1,9 +1,10 @@
 import { geoOrthographic, geoPath } from 'd3-geo';
 
-// LAND_GEOJSON, BORDER_GEOJSON, LAND_DETAIL_GEOJSON, BORDER_DETAIL_GEOJSON,
-// REGION_BORDER_GEOJSON, REGION_LABELS, LAKES_MAJOR_GEOJSON, LAKES_DETAIL_GEOJSON, MOUNTAINS,
-// RIVERS_GEOJSON, CITIES, and THEME are injected as globals by the HTML wrapper at build time.
-/* global LAND_GEOJSON, BORDER_GEOJSON, LAND_DETAIL_GEOJSON, BORDER_DETAIL_GEOJSON, REGION_BORDER_GEOJSON, REGION_LABELS, LAKES_MAJOR_GEOJSON, LAKES_DETAIL_GEOJSON, MOUNTAINS, RIVERS_GEOJSON, CITIES, THEME */
+// LAND_GEOJSON, BORDER_GEOJSON, LAND_DETAIL_PIECES, LAND_DETAIL_BBOXES, BORDER_DETAIL_ARCS,
+// BORDER_DETAIL_BBOXES, REGION_BORDER_ARCS, REGION_BORDER_BBOXES, REGION_LABELS,
+// LAKES_MAJOR_GEOJSON, LAKES_DETAIL_GEOJSON, MOUNTAINS, RIVERS_GEOJSON, CITIES, and THEME are
+// injected as globals by the HTML wrapper at build time.
+/* global LAND_GEOJSON, BORDER_GEOJSON, LAND_DETAIL_PIECES, LAND_DETAIL_BBOXES, BORDER_DETAIL_ARCS, BORDER_DETAIL_BBOXES, REGION_BORDER_ARCS, REGION_BORDER_BBOXES, REGION_LABELS, LAKES_MAJOR_GEOJSON, LAKES_DETAIL_GEOJSON, MOUNTAINS, RIVERS_GEOJSON, CITIES, THEME */
 
 // Temporary flags — mountains and region labels are getting a hand-drawn redesign, so they're
 // switched off here rather than removed: the data pipeline, curve-fitting, and recompute logic
@@ -20,7 +21,13 @@ const path = geoPath(projection, ctx);
 
 let width = 0;
 let height = 0;
-let dpr = Math.max(1, window.devicePixelRatio || 1);
+// Capped at 2 rather than used raw — canvas backing-store pixel count (and so every fill/stroke's
+// rasterization cost) scales with dpr squared, so an uncapped 3x device pays 2.25x the GPU work
+// of a capped-at-2 one for a difference that's imperceptible on this style of flat vector map
+// (thin lines, solid fills, no fine text at native res). This is the single biggest lever on
+// higher-end phones, where dpr is 3 or more.
+const DPR_CAP = 2;
+let dpr = Math.min(DPR_CAP, Math.max(1, window.devicePixelRatio || 1));
 
 let rotation = [10, -12]; // [lambda, phi], degrees
 let zoom = 1;
@@ -56,10 +63,23 @@ const LABEL_MIN_ZOOM = 1.8;
 // how well overlap is avoided.
 const CITY_BASE_MIN_ZOOM = 2.8;
 const CITY_MAX_LABELS = 12;
+// City/town labels use their own, slower fade duration rather than the shared LABEL_FADE_MS —
+// at 220ms (tuned for the astro line labels, which fade as a byproduct of quick, frequent
+// relayouts) a city label reads as a pop-in, not a fade, since it only ever appears once per
+// gesture rather than every frame. A longer, clearly-visible fade here also softens the effect of
+// the grid-fairness picks changing which specific town shows as the user navigates — the same
+// motion that made retained labels feel like they were "randomly popping up" before they were
+// made persistent.
+const CITY_LABEL_FADE_MS = 450;
 // See the comment in recomputeCityLabels' retained-eligibility check — this is the margin below a
 // city's own reveal threshold that zoom has to actually cross before an already-shown city drops
 // for that reason, so a sub-threshold zoom wobble doesn't read as random flicker.
 const CITY_RETAIN_HYSTERESIS = 0.4;
+// Grid used only for spatial fairness among fresh candidates (see recomputeCityLabels) — coarse
+// enough that a real region (a state, a metro area) reliably lands in its own cell or two, fine
+// enough that two genuinely distant areas sharing a screen don't get lumped into one.
+const CITY_GRID_COLS = 4;
+const CITY_GRID_ROWS = 6;
 // The full candidate scan + collision layout (recomputeCityLabels) is too expensive to run on
 // every single animation frame now that CITIES has grown to 170k+ entries — a drag gesture fires
 // render() on every pointermove, so "every frame" during an active drag was actually more like
@@ -147,7 +167,7 @@ function resize() {
   const rect = canvas.getBoundingClientRect();
   width = rect.width;
   height = rect.height;
-  dpr = Math.max(1, window.devicePixelRatio || 1);
+  dpr = Math.min(DPR_CAP, Math.max(1, window.devicePixelRatio || 1));
   canvas.width = Math.round(width * dpr);
   canvas.height = Math.round(height * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -176,6 +196,9 @@ function renderInner() {
 
   const center = [width / 2, height / 2];
   const radius = baseScale * zoom;
+  // Computed once per frame and reused by every detail layer's per-piece cull check below — see
+  // visibleCapRadiusDeg/cullByBbox.
+  const capRadiusDeg = visibleCapRadiusDeg();
 
   // Ocean sphere fill with a soft radial shade for a gentle 3D feel.
   const oceanGradient = ctx.createRadialGradient(
@@ -196,7 +219,7 @@ function renderInner() {
 
   // Land — a flat single-color fill, no elevation/terrain tinting. Finer coastline detail (same
   // color) fades in on top once zoomed in: LAND_GEOJSON is a coarse (~2% simplified) always-on
-  // base so idle auto-rotation never pays for more resolution than it needs, LAND_DETAIL_GEOJSON
+  // base so idle auto-rotation never pays for more resolution than it needs, LAND_DETAIL_PIECES
   // is the same source simplified far less, revealing smaller islands and more accurate
   // coastlines the coarse tier smooths away or drops entirely.
   //
@@ -221,7 +244,11 @@ function renderInner() {
   if (landDetailAlpha > 0) {
     ctx.globalAlpha = landDetailAlpha;
     ctx.beginPath();
-    path(LAND_DETAIL_GEOJSON);
+    for (let i = 0; i < LAND_DETAIL_PIECES.length; i++) {
+      if (cullByBbox(LAND_DETAIL_BBOXES[i], capRadiusDeg)) {
+        path({ type: 'Polygon', coordinates: LAND_DETAIL_PIECES[i] });
+      }
+    }
     ctx.fillStyle = THEME.land;
     ctx.fill();
     ctx.lineWidth = 0.8;
@@ -253,7 +280,9 @@ function renderInner() {
   if (lakeDetailAlpha > 0) {
     ctx.globalAlpha = lakeDetailAlpha;
     ctx.beginPath();
-    path(LAKES_DETAIL_GEOJSON);
+    for (const lakeFeature of LAKES_DETAIL_GEOJSON.features) {
+      if (cullByBbox(lakeFeature.properties.bbox, capRadiusDeg)) path(lakeFeature);
+    }
     ctx.fillStyle = oceanGradient;
     ctx.fill();
     ctx.globalAlpha = 1;
@@ -284,6 +313,7 @@ function renderInner() {
   // all, not just before showing in full detail.
   for (const riverFeature of RIVERS_GEOJSON.features) {
     if (zoom <= riverFeature.properties.min_zoom) continue;
+    if (!cullByBbox(riverFeature.properties.bbox, capRadiusDeg)) continue;
     ctx.beginPath();
     path(riverFeature);
     ctx.lineWidth = 0.6;
@@ -301,7 +331,11 @@ function renderInner() {
   );
   if (regionBorderAlpha > 0) {
     ctx.beginPath();
-    path(REGION_BORDER_GEOJSON);
+    for (let i = 0; i < REGION_BORDER_ARCS.length; i++) {
+      if (cullByBbox(REGION_BORDER_BBOXES[i], capRadiusDeg)) {
+        path({ type: 'LineString', coordinates: REGION_BORDER_ARCS[i] });
+      }
+    }
     ctx.lineWidth = 0.4;
     ctx.strokeStyle = THEME.regionBorder;
     ctx.globalAlpha = regionBorderAlpha;
@@ -366,7 +400,11 @@ function renderInner() {
   }
   if (borderDetailAlpha > 0) {
     ctx.beginPath();
-    path(BORDER_DETAIL_GEOJSON);
+    for (let i = 0; i < BORDER_DETAIL_ARCS.length; i++) {
+      if (cullByBbox(BORDER_DETAIL_BBOXES[i], capRadiusDeg)) {
+        path({ type: 'LineString', coordinates: BORDER_DETAIL_ARCS[i] });
+      }
+    }
     ctx.lineWidth = 0.5;
     ctx.strokeStyle = THEME.countryBorder;
     ctx.globalAlpha = borderDetailAlpha;
@@ -401,7 +439,7 @@ function renderInner() {
       const p = projection([c.lon, c.lat]);
       if (!p) continue;
       if (p[0] < 0 || p[0] > width || p[1] < 0 || p[1] > height) continue;
-      ctx.globalAlpha = Math.min(1, (nowMs - c.fadeStartAt) / LABEL_FADE_MS);
+      ctx.globalAlpha = Math.min(1, (nowMs - c.fadeStartAt) / CITY_LABEL_FADE_MS);
       ctx.beginPath();
       ctx.arc(p[0], p[1], 1.6, 0, Math.PI * 2);
       ctx.fillStyle = THEME.cityDot;
@@ -410,7 +448,7 @@ function renderInner() {
       ctx.fillText(c.name, p[0] + 5, p[1]);
     }
     for (const c of fadingOutCityLabels) {
-      const alpha = 1 - (nowMs - c.fadeOutStartAt) / LABEL_FADE_MS;
+      const alpha = 1 - (nowMs - c.fadeOutStartAt) / CITY_LABEL_FADE_MS;
       if (alpha <= 0) continue;
       if (!isFrontFacing([c.lon, c.lat])) continue;
       const p = projection([c.lon, c.lat]);
@@ -600,6 +638,49 @@ function isFrontFacing([lon, lat]) {
   return cosc > 0;
 }
 
+function angularDistanceDeg(lon1, lat1, lon2, lat2) {
+  const toRad = Math.PI / 180;
+  const p1 = lat1 * toRad;
+  const p2 = lat2 * toRad;
+  const cosc = Math.sin(p1) * Math.sin(p2) + Math.cos(p1) * Math.cos(p2) * Math.cos((lon2 - lon1) * toRad);
+  return (Math.acos(clamp(cosc, -1, 1)) * 180) / Math.PI;
+}
+
+// Once zoomed in enough that the canvas shows only a slice of the front hemisphere, most of a
+// detail layer's geometry (land-detail polygons, border/region-border arcs, rivers, lakes) is
+// still technically "front-facing" by isFrontFacing's hemisphere test but projects way outside the
+// canvas — full path tracing (project every point, emit canvas path commands) still happens for
+// all of it every frame otherwise, for zero visible benefit. capRadiusDeg (see
+// visibleCapRadiusDeg) is the farthest angular distance from the current look-at point that can
+// possibly land inside the canvas rectangle; a piece whose own bbox is farther than that, plus its
+// own angular size and a safety margin, can only be off-screen. Below the zoom where the canvas
+// already shows the whole front hemisphere, capRadiusDeg is 90 and nothing gets culled — there's
+// nothing to gain and every early-return here is a no-op.
+function visibleCapRadiusDeg() {
+  const halfDiagonal = Math.sqrt((width / 2) ** 2 + (height / 2) ** 2);
+  const radius = baseScale * zoom;
+  if (halfDiagonal >= radius) return 90;
+  return (Math.asin(Math.min(1, halfDiagonal / radius)) * 180) / Math.PI;
+}
+
+// Margin is generous and additive, not multiplicative — a false negative here (treating something
+// truly on-screen as culled) is a real visual bug, a false positive (tracing something that turns
+// out to be just off-screen) is only ever a little wasted work. bbox is null for anything that
+// wrapped the antimeridian at build time (see bboxOf in build-globe-html.mjs) or has no precomputed
+// bbox at all — both treated as always-visible.
+const CULL_MARGIN_DEG = 15;
+function cullByBbox(bbox, capRadiusDeg) {
+  if (!bbox || capRadiusDeg >= 90) return true;
+  const [minLon, minLat, maxLon, maxLat] = bbox;
+  const centerLon = (minLon + maxLon) / 2;
+  const centerLat = (minLat + maxLat) / 2;
+  const bboxRadius = Math.max(maxLon - minLon, maxLat - minLat) / 2;
+  const lookLon = -rotation[0];
+  const lookLat = -rotation[1];
+  const dist = angularDistanceDeg(centerLon, centerLat, lookLon, lookLat);
+  return dist - bboxRadius <= capRadiusDeg + CULL_MARGIN_DEG;
+}
+
 // A line label's current screen-space pill box, re-derived live every frame from its geographic
 // anchor + cached offset (see recomputeLabels) — shared by the draw loop and by tap hit-testing
 // (hitTestLabel) so the two can never disagree about where a label actually is.
@@ -706,7 +787,6 @@ function recomputeCityLabels() {
     if (p[0] < 0 || p[0] > width || p[1] < 0 || p[1] > height) continue;
     candidates.push({ name, lon, lat, minZoom, x: p[0], y: p[1] });
   }
-  candidates.sort((a, b) => a.minZoom - b.minZoom);
 
   // A fixed grid cell doesn't account for actual text width — a long name overlaps its
   // neighbor regardless of which cell each dot falls in. Real bounding-box collision, checked
@@ -722,19 +802,131 @@ function recomputeCityLabels() {
   // clearance in the first place, which drops more candidates in exactly the crowded spots and
   // leaves sparser areas untouched (nothing there was close enough to collide either way).
   const placed = [];
-  function tryPlace(c, fadeStartAt) {
-    if (placed.length >= CITY_MAX_LABELS) return;
+  function tryPlace(c, fadeStartAt, ignoreCap) {
+    if (!ignoreCap && placed.length >= CITY_MAX_LABELS) return false;
     const textWidth = ctx.measureText(c.name).width;
     const left = c.x - 4;
     const right = c.x + 5 + textWidth + 10;
     const top = c.y - 9;
     const bottom = c.y + 9;
     const collides = placed.some((p) => !(right < p.left || left > p.right || bottom < p.top || top > p.bottom));
-    if (collides) return;
+    if (collides) return false;
     placed.push({ name: c.name, lon: c.lon, lat: c.lat, minZoom: c.minZoom, left, right, top, bottom, fadeStartAt });
+    return true;
   }
-  for (const c of retained) tryPlace(c, c.fadeStartAt);
-  for (const c of candidates) tryPlace(c, now);
+  // Once a label is showing, it must never disappear just from the user panning or zooming in
+  // further — only zooming back out past its own threshold (already filtered into `retained`
+  // above) or leaving the screen should remove it, matching how Apple/Google Maps labels behave.
+  // Running retained cities through the same collision check as everything else broke that:
+  // rotating the globe shifts each point's screen position independently (points near the limb
+  // move differently than points near the center), so two labels that didn't collide a moment
+  // ago could newly overlap after a pan, and whichever got processed second would silently drop
+  // — a real, already-shown label vanishing for no reason the user did (zooming out). Retained
+  // labels go straight into `placed` unconditionally, bypassing both the collision check and the
+  // CITY_MAX_LABELS cap. Fresh candidates below still collision-check against them (and each
+  // other) so a new label never renders on top of one that's already there, but nothing that
+  // already earned its spot can lose it to a new arrival or a cap that's already spoken for.
+  for (const c of retained) {
+    const textWidth = ctx.measureText(c.name).width;
+    placed.push({
+      name: c.name,
+      lon: c.lon,
+      lat: c.lat,
+      minZoom: c.minZoom,
+      left: c.x - 4,
+      right: c.x + 5 + textWidth + 10,
+      top: c.y - 9,
+      bottom: c.y + 9,
+      fadeStartAt: c.fadeStartAt,
+    });
+  }
+
+  function cellKeyOf(c) {
+    const col = clamp(Math.floor((c.x / width) * CITY_GRID_COLS), 0, CITY_GRID_COLS - 1);
+    const row = clamp(Math.floor((c.y / height) * CITY_GRID_ROWS), 0, CITY_GRID_ROWS - 1);
+    return col + ',' + row;
+  }
+
+  // A flat population-priority sort here lets a dense, populous area (Hartford/Springfield/
+  // Worcester) claim every remaining slot before a real but less-populous area sharing the same
+  // screen (Vermont) ever gets a turn. Bucketing fresh candidates into a coarse grid and
+  // round-robining across cells (each cell's best remaining candidate before any cell's second)
+  // means every part of the visible screen gets a shot at the room left over after retained
+  // labels, before any one part gets a second. Cells already covered by a retained label count
+  // as fulfilled too.
+  const cellsFulfilled = new Set(retained.map(cellKeyOf));
+  const cellBuckets = new Map();
+  for (const c of candidates) {
+    const key = cellKeyOf(c);
+    if (!cellBuckets.has(key)) cellBuckets.set(key, []);
+    cellBuckets.get(key).push(c);
+  }
+
+  // Fairness among real candidates only helps when every cell actually has one to put forward.
+  // Vermont's biggest town is genuinely smaller than Hartford/Worcester/Springfield, so at a zoom
+  // where those neighbors have just crossed their own population threshold, Vermont's hasn't
+  // crossed its own yet — its cell never had an entry in `candidates` to begin with, so no amount
+  // of round-robining among real candidates touches it. Giving that cell's single biggest place a
+  // bucket of its own (one entry) lets it compete in the SAME round 1 as every other cell's first
+  // pick — the fix that matters is making sure this runs before the main round-robin below, not
+  // after: running it only once cap room happened to survive every other cell's second and third
+  // picks (the previous approach) meant a fully-populated screen elsewhere could exhaust the cap
+  // before an empty cell ever got a turn, which is exactly what kept happening.
+  if (zoom > CITY_BASE_MIN_ZOOM) {
+    const fallbackBest = new Map();
+    for (const city of CITIES) {
+      const [name, lon, lat, minZoom] = city;
+      if (zoom > minZoom) continue; // already a real candidate above, no fallback needed
+      if (retainedKeys.has(name + '|' + lon + '|' + lat)) continue;
+      if (!isFrontFacing([lon, lat])) continue;
+      const p = projection([lon, lat]);
+      if (!p) continue;
+      if (p[0] < 0 || p[0] > width || p[1] < 0 || p[1] > height) continue;
+      const key = cellKeyOf({ x: p[0], y: p[1] });
+      if (cellsFulfilled.has(key) || cellBuckets.has(key)) continue;
+      const existing = fallbackBest.get(key);
+      if (!existing || minZoom < existing.minZoom) {
+        fallbackBest.set(key, { name, lon, lat, minZoom, x: p[0], y: p[1] });
+      }
+    }
+    for (const [key, c] of fallbackBest) cellBuckets.set(key, [c]);
+  }
+
+  const buckets = [...cellBuckets.entries()];
+  for (const [, bucket] of buckets) bucket.sort((a, b) => a.minZoom - b.minZoom);
+
+  // Round 1 (breadth, uncapped): every occupied cell — real candidate or Vermont-style fallback
+  // — gets its single best pick tried once, before CITY_MAX_LABELS is enforced at all. With the
+  // cap applied from the start, Rutland lost to North Adams for a slot not because North Adams
+  // was the better candidate (it wasn't — Rutland's own minZoom is lower, i.e. bigger) but purely
+  // because North Adams' cell happened to be earlier in bucket iteration order when the 12th slot
+  // ran out. The cap is meant to stop one crowded area from hogging every slot, not to make an
+  // arbitrary iteration order decide which entire regions get represented at all — every distinct
+  // visible area earning at least one label (subject only to real collision, never the cap) is
+  // the whole point of the grid-fairness system above; enforcing the cap in this first pass
+  // defeated it in exactly the case it was built for.
+  for (const [key, bucket] of buckets) {
+    if (bucket.length > 0) {
+      const c = bucket.shift();
+      if (tryPlace(c, now, true)) cellsFulfilled.add(key);
+    }
+  }
+
+  // Round 2+ (depth, capped): a cell dense enough to have more than one real candidate can add
+  // more, but only up to CITY_MAX_LABELS total — this is the cap doing its actual job, limiting
+  // how much any one busy area can pile on top of the one-per-area guarantee above.
+  let remaining = 0;
+  for (const [, bucket] of buckets) remaining += bucket.length;
+  let bucketIndex = 0;
+  while (remaining > 0 && placed.length < CITY_MAX_LABELS && buckets.length > 0) {
+    const [key, bucket] = buckets[bucketIndex % buckets.length];
+    bucketIndex++;
+    if (bucket.length > 0) {
+      const c = bucket.shift();
+      if (tryPlace(c, now)) cellsFulfilled.add(key);
+      remaining--;
+    }
+  }
 
   // Anything that was showing a moment ago but didn't make it into `placed` this round eases out
   // instead of vanishing outright — see fadingOutCityLabels' declaration and its draw loop in
@@ -745,7 +937,7 @@ function recomputeCityLabels() {
     .filter((c) => !placedKeys.has(c.name + '|' + c.lon + '|' + c.lat))
     .map((c) => ({ name: c.name, lon: c.lon, lat: c.lat, fadeOutStartAt: now }));
   fadingOutCityLabels = fadingOutCityLabels
-    .filter((c) => now - c.fadeOutStartAt < LABEL_FADE_MS)
+    .filter((c) => now - c.fadeOutStartAt < CITY_LABEL_FADE_MS)
     .concat(freshlyDropped);
 
   cityLabels = placed;
@@ -1175,8 +1367,8 @@ function tick(now) {
   // redraw — matters most for city labels, since a fade starts right at gesture end, when nothing
   // else is left to keep triggering renders.
   const cityFading =
-    cityLabels.some((c) => now - c.fadeStartAt < LABEL_FADE_MS) ||
-    fadingOutCityLabels.some((c) => now - c.fadeOutStartAt < LABEL_FADE_MS);
+    cityLabels.some((c) => now - c.fadeStartAt < CITY_LABEL_FADE_MS) ||
+    fadingOutCityLabels.some((c) => now - c.fadeOutStartAt < CITY_LABEL_FADE_MS);
   const regionLabelFading =
     regionLabels.some((c) => now - c.fadeStartAt < LABEL_FADE_MS) ||
     fadingOutRegionLabels.some((c) => now - c.fadeOutStartAt < LABEL_FADE_MS);
