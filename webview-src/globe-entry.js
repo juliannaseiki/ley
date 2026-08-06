@@ -190,9 +190,34 @@ function render() {
   }
 }
 
+// The full recompute only runs at gesture end (see recomputeCityLabels), so during an active,
+// continuous zoom-out (finger still down) cityLabels still holds whatever was showing before the
+// gesture started — a screen's worth of small towns from a much deeper zoom. The per-frame draw
+// loop below only ever checked front-facing/on-screen, never each label's own zoom threshold, so
+// those stale labels just sat there at full opacity for the whole gesture, not clearing until the
+// user lifted their finger and the next recompute finally pruned them — reads as "places aren't
+// fading out on zoom out." Splitting zoom-ineligible labels into fadingOutCityLabels every frame
+// (not just at recompute) means the exact same easing-out animation recomputeCityLabels already
+// uses for a dropped label plays live, continuously, as zoom actually crosses each label's own
+// threshold — not just once the gesture happens to end.
+function fadeOutStaleCityLabels() {
+  if (cityLabels.length === 0) return;
+  const now = performance.now();
+  const stillEligible = [];
+  for (const c of cityLabels) {
+    if (zoom <= c.minZoom - CITY_RETAIN_HYSTERESIS) {
+      fadingOutCityLabels.push({ name: c.name, lon: c.lon, lat: c.lat, fadeOutStartAt: now });
+    } else {
+      stillEligible.push(c);
+    }
+  }
+  if (stillEligible.length !== cityLabels.length) cityLabels = stillEligible;
+}
+
 function renderInner() {
   projection.rotate(rotation);
   ctx.clearRect(0, 0, width, height);
+  fadeOutStaleCityLabels();
 
   const center = [width / 2, height / 2];
   const radius = baseScale * zoom;
@@ -802,8 +827,8 @@ function recomputeCityLabels() {
   // clearance in the first place, which drops more candidates in exactly the crowded spots and
   // leaves sparser areas untouched (nothing there was close enough to collide either way).
   const placed = [];
-  function tryPlace(c, fadeStartAt, ignoreCap) {
-    if (!ignoreCap && placed.length >= CITY_MAX_LABELS) return false;
+  function tryPlace(c, fadeStartAt) {
+    if (placed.length >= CITY_MAX_LABELS) return false;
     const textWidth = ctx.measureText(c.name).width;
     const left = c.x - 4;
     const right = c.x + 5 + textWidth + 10;
@@ -815,18 +840,22 @@ function recomputeCityLabels() {
     return true;
   }
   // Once a label is showing, it must never disappear just from the user panning or zooming in
-  // further — only zooming back out past its own threshold (already filtered into `retained`
-  // above) or leaving the screen should remove it, matching how Apple/Google Maps labels behave.
-  // Running retained cities through the same collision check as everything else broke that:
-  // rotating the globe shifts each point's screen position independently (points near the limb
-  // move differently than points near the center), so two labels that didn't collide a moment
-  // ago could newly overlap after a pan, and whichever got processed second would silently drop
-  // — a real, already-shown label vanishing for no reason the user did (zooming out). Retained
-  // labels go straight into `placed` unconditionally, bypassing both the collision check and the
-  // CITY_MAX_LABELS cap. Fresh candidates below still collision-check against them (and each
-  // other) so a new label never renders on top of one that's already there, but nothing that
-  // already earned its spot can lose it to a new arrival or a cap that's already spoken for.
-  for (const c of retained) {
+  // further, only from zooming back out past its own threshold (already filtered into `retained`
+  // above) or leaving the screen, matching how Apple/Google Maps labels behave — so retained
+  // cities skip the collision check entirely (rotating the globe shifts each point's screen
+  // position independently, so two labels that didn't collide a moment ago could newly overlap
+  // after a pan, and whichever got checked second would silently drop otherwise).
+  //
+  // But CITY_MAX_LABELS still has to bind on the TOTAL — retained ones included — or panning
+  // across a long stretch of real, individually-qualifying towns at a fixed zoom (no zoom-out to
+  // ever trigger a drop) just accumulates them without limit, which is exactly the wall-of-
+  // overlapping-text this cap exists to prevent. When retained alone outgrows the cap, the least
+  // significant ones (highest minZoom, i.e. smallest population) are the ones that give way —
+  // they still ease out through the normal fade, just triggered by running out of room rather
+  // than a zoom or screen-edge boundary. `retained` is already sorted by minZoom above, so this is
+  // a plain slice.
+  const keptRetained = retained.slice(0, CITY_MAX_LABELS);
+  for (const c of keptRetained) {
     const textWidth = ctx.measureText(c.name).width;
     placed.push({
       name: c.name,
@@ -854,7 +883,7 @@ function recomputeCityLabels() {
   // means every part of the visible screen gets a shot at the room left over after retained
   // labels, before any one part gets a second. Cells already covered by a retained label count
   // as fulfilled too.
-  const cellsFulfilled = new Set(retained.map(cellKeyOf));
+  const cellsFulfilled = new Set(keptRetained.map(cellKeyOf));
   const cellBuckets = new Map();
   for (const c of candidates) {
     const key = cellKeyOf(c);
@@ -895,21 +924,26 @@ function recomputeCityLabels() {
   const buckets = [...cellBuckets.entries()];
   for (const [, bucket] of buckets) bucket.sort((a, b) => a.minZoom - b.minZoom);
 
-  // Round 1 (breadth, uncapped): every occupied cell — real candidate or Vermont-style fallback
-  // — gets its single best pick tried once, before CITY_MAX_LABELS is enforced at all. With the
-  // cap applied from the start, Rutland lost to North Adams for a slot not because North Adams
-  // was the better candidate (it wasn't — Rutland's own minZoom is lower, i.e. bigger) but purely
-  // because North Adams' cell happened to be earlier in bucket iteration order when the 12th slot
-  // ran out. The cap is meant to stop one crowded area from hogging every slot, not to make an
-  // arbitrary iteration order decide which entire regions get represented at all — every distinct
-  // visible area earning at least one label (subject only to real collision, never the cap) is
-  // the whole point of the grid-fairness system above; enforcing the cap in this first pass
-  // defeated it in exactly the case it was built for.
-  for (const [key, bucket] of buckets) {
-    if (bucket.length > 0) {
-      const c = bucket.shift();
-      if (tryPlace(c, now, true)) cellsFulfilled.add(key);
-    }
+  // Round 1 (breadth): every occupied cell — real candidate or Vermont-style fallback — gets a
+  // shot at its single best pick before any cell gets a second (round 2 below). Letting this
+  // round ignore CITY_MAX_LABELS entirely was tried and made things worse the other direction: 20+
+  // simultaneously-occupied cells (a wide, genuinely dense stretch of coastline, say) each placing
+  // one label unconditionally blew straight past the cap, right back to the wall-of-overlapping-
+  // text problem. The cap has to bind here too — the fix that actually matters is HOW cells get
+  // cut off once it does. Iterating buckets in raw insertion order (tried before this) let Rutland
+  // lose a slot to North Adams for no reason related to which was the better candidate — purely
+  // because North Adams' cell came first in iteration order when the 12th slot ran out. Sorting
+  // this round's candidates by minZoom first means that when the cap forces a cutoff, it's the
+  // objectively weaker candidates (smaller places, or fallback picks further from their own
+  // threshold) that miss out, not whichever cell happened to be enumerated first — still exactly
+  // one shot per cell, just prioritized instead of arbitrary.
+  const roundOnePicks = buckets
+    .filter(([, bucket]) => bucket.length > 0)
+    .map(([key, bucket]) => ({ key, item: bucket[0] }))
+    .sort((a, b) => a.item.minZoom - b.item.minZoom);
+  for (const { key, item } of roundOnePicks) {
+    cellBuckets.get(key).shift();
+    if (tryPlace(item, now)) cellsFulfilled.add(key);
   }
 
   // Round 2+ (depth, capped): a cell dense enough to have more than one real candidate can add
