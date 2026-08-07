@@ -139,6 +139,22 @@ const REGION_BORDER_FADE_END = 2.2;
 // always resolves to fully opaque) — this constant only decides whether labels are eligible to
 // draw at all.
 const LABEL_MIN_ZOOM = 1.8;
+// layoutLabels' ring search already skips a label rather than force it to truly overlap another,
+// but with up to 40 possible candidates (10 bodies x 4 line kinds) all converging toward a pole at
+// once, that search can still end up filling every nearby ring with SOMETHING, packed tightly
+// enough to read as illegible clutter even where no two boxes technically intersect. Capping how
+// many candidates even compete — tighter the more zoomed out the view is, since more of the globe
+// (and so more lines) is visible at once — gives the search room to actually keep the labels that
+// do show clearly apart, rather than spreading thin across too many. Ramps from
+// LABEL_MAX_COUNT_MIN at LABEL_MIN_ZOOM up to LABEL_MAX_COUNT_MAX (every line gets its own
+// label, effectively uncapped) by LABEL_DENSITY_FULL_ZOOM.
+const LABEL_MAX_COUNT_MIN = 6;
+const LABEL_MAX_COUNT_MAX = 40;
+const LABEL_DENSITY_FULL_ZOOM = 12;
+function labelCapForZoom() {
+  const t = clamp((zoom - LABEL_MIN_ZOOM) / (LABEL_DENSITY_FULL_ZOOM - LABEL_MIN_ZOOM), 0, 1);
+  return Math.round(LABEL_MAX_COUNT_MIN + t * (LABEL_MAX_COUNT_MAX - LABEL_MAX_COUNT_MIN));
+}
 // The city-label selection algorithm's own tuning (CITY_MAX_LABELS, CITY_GRID_COLS/ROWS) now
 // lives entirely in city-labels/selection.js — this file only imports the two constants that also
 // affect drawing here: CITY_BASE_MIN_ZOOM (the fade-eligibility gate below) and
@@ -1060,13 +1076,24 @@ function recomputeRegionLabels() {
 // Places each label as close as possible to its true anchor without overlapping an
 // already-placed one, searching outward ring by ring (radius = ring * RING_STEP) and trying
 // several angles per ring rather than only straight up — a dense cluster (e.g. many meridians
-// converging near a pole) fans out around the cluster instead of piling into a single
-// increasingly-tall column. Returns one entry per candidate, in the same order, with `null`
-// for any candidate that found no clear spot within the search radius — better to skip a label
-// in an extremely crowded spot than force it to overlap another.
+// converging near a pole, or now every line's own closest-to-screen-center point) fans out
+// around the cluster instead of piling into a single increasingly-tall column. Returns one entry
+// per candidate, in the same order, with `null` for any candidate that found no clear spot within
+// the search radius — better to skip a label in an extremely crowded spot than force it to
+// overlap another.
+//
+// LABEL_MAX_RINGS needs real headroom now that every line's anchor (pickCenterAnchor) converges
+// on the same screen point rather than spreading out on its own — with up to ~40 candidates all
+// wanting nearly the same spot, 6 rings (84px radius, 49 slots) wasn't enough room and candidates
+// past that point were silently dropped entirely rather than pushed further out, which is what
+// made a line's label (Mars, among others) sometimes just not appear at all. 24 rings (336px
+// radius, ~193 slots) gives far more capacity than the ~40-candidate ceiling could ever need, so a
+// label essentially never gets fully dropped for running out of search room — only genuinely
+// duplicate anchors (impossible in practice) would exhaust it. Labels not in a crowded cluster
+// still land at or near ring 0 either way; only the crowded ones get pushed out this much further.
 const LABEL_RING_STEP = 14;
 const LABEL_ANGLES_PER_RING = 8;
-const LABEL_MAX_RINGS = 6;
+const LABEL_MAX_RINGS = 24;
 function layoutLabels(candidates) {
   const placed = [];
   const results = [];
@@ -1141,51 +1168,39 @@ function isOnScreen(point) {
   );
 }
 
-// Picks the on-screen point along a line that's farthest from every already-chosen label
-// position this pass, with a mild pull toward the screen center as a tie-breaker (and as the
-// sole criterion for the very first label placed, when there's nothing yet to spread away from).
-// This is what makes labels spread out along each line's own visible length to fill empty space,
-// rather than every line racing toward the single point nearest the center — which piled a wall
-// of labels into one spot while the rest of the screen sat empty.
+// Picks the on-screen point along a line closest to the screen's center — every line's label
+// sits wherever that line itself passes nearest the middle of the current view, the most direct
+// reading of "the label is on its line, in the center of the screen." Ties/near-ties (two lines
+// both passing close to center at similar points) are expected and fine here — layoutLabels'
+// collision search is what actually keeps two labels from overlapping, nudging one only as far
+// from its true nearest-to-center point as it needs to; this function's job is just picking each
+// line's ideal spot before that local nudging happens.
 //
 // Candidates are restricted to a central zone (LABEL_CENTER_RADIUS_FRACTION of the screen's
-// shorter dimension) wherever the line has any points there — spreading is only applied within
-// that zone, not the line's full length. Without this cap, "farthest from everything else" alone
-// tends to win by pushing labels out to the far reaches of a long line, scattered nowhere near
-// where the eye is actually looking, rather than gently spread within the area of interest.
-const LABEL_CENTER_BIAS = 0.05;
+// shorter dimension) wherever the line has any points there — a line that doesn't pass anywhere
+// near the middle of the screen still needs an anchor somewhere, so falls back to its closest
+// approach even outside the zone, rather than getting no label at all.
 const LABEL_CENTER_RADIUS_FRACTION = 0.42;
-function pickSpreadAnchor(line, chosenPositions, center) {
+function pickCenterAnchor(line, center) {
   const maxRadius = Math.min(width, height) * LABEL_CENTER_RADIUS_FRACTION;
   let best = null;
-  let bestScore = -Infinity;
+  let bestScore = Infinity; // distance to screen center — lower is better
   let bestFallback = null;
-  let bestFallbackScore = -Infinity;
+  let bestFallbackScore = Infinity;
   for (const segment of line.feature.coordinates) {
     for (const point of segment) {
       if (!isOnScreen(point)) continue;
       const p = projection(point);
       if (!p) continue;
       const centerDist = Math.hypot(p[0] - center[0], p[1] - center[1]);
-      let score;
-      if (chosenPositions.length === 0) {
-        score = -centerDist;
-      } else {
-        let minDist = Infinity;
-        for (const c of chosenPositions) {
-          const d = Math.hypot(p[0] - c[0], p[1] - c[1]);
-          if (d < minDist) minDist = d;
-        }
-        score = minDist - centerDist * LABEL_CENTER_BIAS;
-      }
       // Track the best in-zone candidate, and separately the best overall in case the line
       // never enters the zone (e.g. it only clips a far corner of the current view).
-      if (score > bestFallbackScore) {
-        bestFallbackScore = score;
+      if (centerDist < bestFallbackScore) {
+        bestFallbackScore = centerDist;
         bestFallback = point;
       }
-      if (centerDist <= maxRadius && score > bestScore) {
-        bestScore = score;
+      if (centerDist <= maxRadius && centerDist < bestScore) {
+        bestScore = centerDist;
         best = point;
       }
     }
@@ -1202,30 +1217,25 @@ function recomputeLabels() {
   const center = [width / 2, height / 2];
   ctx.font = '600 11px -apple-system, BlinkMacSystemFont, system-ui, sans-serif';
 
-  // Pass 1: keep any still-valid cached anchor as-is, registering its screen position so pass 2
-  // can spread fresh picks away from it rather than ignoring where existing labels already sit.
+  // Pass 1: keep any still-valid cached anchor as-is — still on-screen, so still a fine spot on
+  // (or near) the ring.
   const anchorForLine = new Map();
-  const chosenPositions = [];
   for (const line of astroLines) {
     const key = line.bodyId + ':' + line.kind;
     const cached = labelAnchors.get(key);
-    if (cached && isOnScreen(cached)) {
-      anchorForLine.set(key, cached);
-      const p = projection(cached);
-      if (p) chosenPositions.push(p);
-    }
+    if (cached && isOnScreen(cached)) anchorForLine.set(key, cached);
   }
-  // Pass 2: everything else gets a fresh anchor, chosen to spread away from what pass 1 (and
-  // each prior fresh pick this pass) already claimed.
+  // Pass 2: everything else gets a fresh anchor at its own closest approach to center (see
+  // pickCenterAnchor) — each line is scored independently against the same fixed center point,
+  // not against where other lines already landed, so this doesn't need to run in any particular
+  // order.
   for (const line of astroLines) {
     const key = line.bodyId + ':' + line.kind;
     if (anchorForLine.has(key)) continue;
-    const fresh = pickSpreadAnchor(line, chosenPositions, center);
+    const fresh = pickCenterAnchor(line, center);
     if (fresh) {
       anchorForLine.set(key, fresh);
       labelAnchors.set(key, fresh);
-      const p = projection(fresh);
-      if (p) chosenPositions.push(p);
     } else {
       labelAnchors.delete(key);
     }
@@ -1262,13 +1272,24 @@ function recomputeLabels() {
       width: labelWidth,
     });
   }
+  // Keep only the labels closest to wherever the user is actually looking (screen center) when
+  // there are more candidates than labelCapForZoom() allows at the current zoom — a neutral
+  // criterion that doesn't have to decide any one body/line kind matters more than another.
+  candidates.sort((a, b) => {
+    const da = (a.x - center[0]) ** 2 + (a.y - center[1]) ** 2;
+    const db = (b.x - center[0]) ** 2 + (b.y - center[1]) ** 2;
+    return da - db;
+  });
+  const cappedCandidates = candidates.slice(0, labelCapForZoom());
+
   // layoutLabels doesn't reorder or drop entries, so placed[i] always corresponds to
-  // candidates[i] — used below to recover each label's offset from its raw anchor projection.
-  const placed = layoutLabels(candidates);
+  // cappedCandidates[i] — used below to recover each label's offset from its raw anchor
+  // projection.
+  const placed = layoutLabels(cappedCandidates);
   renderedLabels = placed
     .map((label, i) =>
       label && {
-        anchor: candidates[i].anchor,
+        anchor: cappedCandidates[i].anchor,
         bodyId: label.bodyId,
         offsetX: label.x - candidates[i].x,
         offsetY: label.y - candidates[i].y,
