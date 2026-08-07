@@ -10,6 +10,8 @@
 // all — a completed fade-out deletes the entry outright (see advance) rather than leaving a
 // permanent "hidden" entry sitting in the map forever.
 
+import { visibilityScore } from './scoring.js';
+
 export const CITY_LABEL_FADE_MS = 250;
 
 export function createLabelStateStore() {
@@ -80,9 +82,21 @@ export function applySelection(store, selected, now) {
 // frame — not just when a new selection pass happens to run. Without this, a label picked at a
 // deep zoom stays at full opacity for the rest of an active zoom-out gesture (selection only runs
 // at gesture end today), only clearing once the user lifts their finger.
+//
+// Skips anything that isn't currently a real (score > 0) candidate — a fallback-tier pick (see
+// selection.js) is selected precisely BECAUSE zoom is nowhere near its own minZoom, often by
+// several zoom units at a sparse enough spot (a small Arctic town might only need to be the best
+// available option in an otherwise-empty screen area, not actually past its own threshold at all).
+// That gap is always bigger than `hysteresis`, so without this check every fallback label would
+// fail it on the very next frame after being selected — a real label flashing in and immediately
+// fading back out, for no reason the user did. A fallback pick's own minZoom was never a
+// meaningful "drop point" for it to begin with; it only leaves when the next recompute decides
+// something else deserves its spot, or it's no longer genuinely on screen — not from this live
+// per-frame check.
 export function dropStaleByZoom(store, zoom, hysteresis, now) {
   for (const [, entry] of store) {
     if (entry.phase === 'fadingOut') continue;
+    if (visibilityScore(entry.minZoom, zoom) <= 0) continue;
     if (zoom <= entry.minZoom - hysteresis) {
       entry.phase = 'fadingOut';
       entry.phaseStartedAt = now;

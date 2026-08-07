@@ -16,12 +16,96 @@ import { drawCityLabels, cityLabelFont } from './city-labels/render.js';
 // skips drawing (and, for region labels, the recompute itself) in the meantime.
 const SHOW_MOUNTAINS = false;
 const SHOW_REGION_LABELS = false;
+// On-canvas zoom readout for tuning reveal thresholds — see the draw site in renderInner.
+const SHOW_ZOOM_DEBUG = true;
 
 const canvas = document.getElementById('globe');
 const ctx = canvas.getContext('2d');
 
 const projection = geoOrthographic().clipAngle(90).precision(0.3);
 const path = geoPath(projection, ctx);
+
+// Real coastlines, lake shores, rivers, and borders read as a handful of straight segments
+// meeting at sharp points once simplified enough to be practical data at deep zoom — the actual
+// geography they represent is basically never that angular. Restoring more of the original detail
+// to fix it was tried and rejected: even one extra round of it made the bundle 1.5-2.5x bigger for
+// the same visual result. This gets the same smoothing for free at render time instead, by
+// rounding the corners of the EXISTING (already-simplified) point sequence rather than adding any
+// new ones — for each vertex, curve from the previous edge's midpoint through the vertex itself
+// (as the quadratic control point) to the next edge's midpoint. Standard technique, no added data.
+//
+// geoPath()'s context.js confirms this is safe to intercept this way: it only ever calls
+// moveTo/lineTo/closePath on whatever raw context it's given (never beginPath, and arc() only for
+// Point geometries, which none of the smoothed layers below are) — so a stand-in object
+// implementing just those three methods is a complete, faithful substitute for the real ctx from
+// d3-geo's point of view. It buffers each subpath (a moveTo starts a new one, for any reason:
+// a new disjoint piece, a polygon hole, a fresh segment after clipping at the visible horizon) and
+// only actually draws once that subpath is complete, as this smoothed curve instead of the
+// straight lines d3-geo would otherwise ask for.
+function drawSmoothSubpath(targetCtx, points, closed) {
+  const n = points.length;
+  if (n < 3) {
+    targetCtx.moveTo(points[0][0], points[0][1]);
+    for (let i = 1; i < n; i++) targetCtx.lineTo(points[i][0], points[i][1]);
+    if (closed) targetCtx.closePath();
+    return;
+  }
+  if (closed) {
+    const midX = (points[n - 1][0] + points[0][0]) / 2;
+    const midY = (points[n - 1][1] + points[0][1]) / 2;
+    targetCtx.moveTo(midX, midY);
+    for (let i = 0; i < n; i++) {
+      const next = points[(i + 1) % n];
+      const mx = (points[i][0] + next[0]) / 2;
+      const my = (points[i][1] + next[1]) / 2;
+      targetCtx.quadraticCurveTo(points[i][0], points[i][1], mx, my);
+    }
+    targetCtx.closePath();
+  } else {
+    // An open path (a border arc, a river) keeps its own two endpoints exactly where they are —
+    // only the interior corners round off — so a piece's ends still meet cleanly wherever another
+    // piece's cull/clip boundary or an adjacent arc needs them to.
+    targetCtx.moveTo(points[0][0], points[0][1]);
+    for (let i = 1; i < n - 1; i++) {
+      const mx = (points[i][0] + points[i + 1][0]) / 2;
+      const my = (points[i][1] + points[i + 1][1]) / 2;
+      targetCtx.quadraticCurveTo(points[i][0], points[i][1], mx, my);
+    }
+    targetCtx.lineTo(points[n - 1][0], points[n - 1][1]);
+  }
+}
+// flush() must be called once after the last path() call in a beginPath()/fill()-or-stroke()
+// sequence — the final subpath has no later moveTo to signal it's complete, so nothing else would
+// ever draw it.
+function createSmoothPathContext(targetCtx) {
+  let current = [];
+  let isClosed = false;
+  function flushCurrent() {
+    if (current.length > 0) drawSmoothSubpath(targetCtx, current, isClosed);
+    current = [];
+    isClosed = false;
+  }
+  return {
+    moveTo(x, y) {
+      flushCurrent();
+      current = [[x, y]];
+    },
+    lineTo(x, y) {
+      current.push([x, y]);
+    },
+    closePath() {
+      isClosed = true;
+      flushCurrent();
+    },
+    arc(x, y, r, a0, a1) {
+      flushCurrent();
+      targetCtx.arc(x, y, r, a0, a1);
+    },
+    flush: flushCurrent,
+  };
+}
+const smoothPathContext = createSmoothPathContext(ctx);
+const smoothPath = geoPath(projection, smoothPathContext);
 
 let width = 0;
 let height = 0;
@@ -293,9 +377,10 @@ function renderInner() {
     ctx.beginPath();
     for (let i = 0; i < LAND_DETAIL_PIECES.length; i++) {
       if (cullByBbox(LAND_DETAIL_BBOXES[i], capRadiusDeg)) {
-        path({ type: 'Polygon', coordinates: LAND_DETAIL_PIECES[i] });
+        smoothPath({ type: 'Polygon', coordinates: LAND_DETAIL_PIECES[i] });
       }
     }
+    smoothPathContext.flush();
     ctx.fillStyle = THEME.land;
     ctx.fill();
     ctx.lineWidth = 0.8;
@@ -328,8 +413,9 @@ function renderInner() {
     ctx.globalAlpha = lakeDetailAlpha;
     ctx.beginPath();
     for (const lakeFeature of LAKES_DETAIL_GEOJSON.features) {
-      if (cullByBbox(lakeFeature.properties.bbox, capRadiusDeg)) path(lakeFeature);
+      if (cullByBbox(lakeFeature.properties.bbox, capRadiusDeg)) smoothPath(lakeFeature);
     }
+    smoothPathContext.flush();
     ctx.fillStyle = oceanGradient;
     ctx.fill();
     ctx.globalAlpha = 1;
@@ -362,8 +448,9 @@ function renderInner() {
     if (zoom <= riverFeature.properties.min_zoom) continue;
     if (!cullByBbox(riverFeature.properties.bbox, capRadiusDeg)) continue;
     ctx.beginPath();
-    path(riverFeature);
-    ctx.lineWidth = 0.6;
+    smoothPath(riverFeature);
+    smoothPathContext.flush();
+    ctx.lineWidth = 2.5;
     ctx.strokeStyle = THEME.river;
     ctx.stroke();
   }
@@ -380,6 +467,9 @@ function renderInner() {
     ctx.beginPath();
     for (let i = 0; i < REGION_BORDER_ARCS.length; i++) {
       if (cullByBbox(REGION_BORDER_BBOXES[i], capRadiusDeg)) {
+        // Sharp, not smoothed — administrative borders often follow straight surveyed lines
+        // (Vermont's own southern edge among them), so rounding their corners would be a less
+        // accurate picture, not a better-looking one, unlike a coastline/lake/river's real curves.
         path({ type: 'LineString', coordinates: REGION_BORDER_ARCS[i] });
       }
     }
@@ -449,6 +539,7 @@ function renderInner() {
     ctx.beginPath();
     for (let i = 0; i < BORDER_DETAIL_ARCS.length; i++) {
       if (cullByBbox(BORDER_DETAIL_BBOXES[i], capRadiusDeg)) {
+        // Sharp, not smoothed — see the same note on the region-border loop above.
         path({ type: 'LineString', coordinates: BORDER_DETAIL_ARCS[i] });
       }
     }
@@ -550,6 +641,22 @@ function renderInner() {
       ctx.fillStyle = THEME.pin;
       ctx.fill();
     }
+  }
+
+  // Temporary debug readout — current zoom, for tuning reveal thresholds (rivers, cities, region
+  // borders, etc. all key off this same value). Drawn last, top-left, so it's always legible
+  // regardless of what's underneath. Remove once the thresholds this is being used to tune are
+  // settled.
+  if (SHOW_ZOOM_DEBUG) {
+    const label = `zoom ${zoom.toFixed(2)}`;
+    ctx.font = '600 12px monospace';
+    const textWidth = ctx.measureText(label).width;
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(8, 8, textWidth + 12, 20);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, 14, 18);
   }
 }
 

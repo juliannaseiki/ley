@@ -308,7 +308,16 @@ const riversGeoJson = feature(riversTopology, riversTopology.objects['rivers-mer
 // river that has crossed its reveal threshold but sits nowhere near the current view still skips
 // tracing, not just the (much rarer) ones that haven't reached their threshold at all.
 riversGeoJson.features = riversGeoJson.features.filter((f) => f.geometry);
+// Rescaled a second time here, from the [2, 5] range baked in by the one-off merge script above to
+// [RIVER_MIN_ZOOM_FLOOR, RIVER_MIN_ZOOM_CEIL] — pushes every river's reveal point deeper without
+// re-running that merge step (which needs the original per-continent source files) and without
+// disturbing the relative importance ordering it already encodes (the biggest rivers still show
+// first, just later overall).
+const RIVER_MIN_ZOOM_FLOOR = 4;
+const RIVER_MIN_ZOOM_CEIL = 75;
 riversGeoJson.features.forEach((f) => {
+  const t = (f.properties.min_zoom - 2) / (5 - 2);
+  f.properties.min_zoom = Math.round((RIVER_MIN_ZOOM_FLOOR + t * (RIVER_MIN_ZOOM_CEIL - RIVER_MIN_ZOOM_FLOOR)) * 100) / 100;
   f.properties.bbox = bboxOf(f.geometry.coordinates);
 });
 

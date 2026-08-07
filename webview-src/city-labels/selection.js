@@ -106,29 +106,23 @@ export function selectCityLabels({
     return true;
   }
 
-  // Already-shown labels skip the collision check entirely (rotating the globe shifts each
-  // point's screen position independently, so two labels that didn't collide a moment ago could
-  // newly overlap after a pan) — but the cap still binds on the total, retained included, or a
-  // long pan across many individually-qualifying towns at a fixed zoom accumulates without limit.
-  // When retained alone outgrows the cap, the least significant ones give way — stateMachine.js's
-  // applySelection eases them out through the normal fade, same as any other drop.
+  // Already-shown labels get first claim on a slot, most-significant-first (retained is already
+  // sorted by minZoom above) — and DO collision-check against each other via the same tryPlace
+  // used for everything else. This used to be an unconditional push with no collision check at
+  // all, to fix a specific bug where rotating the globe could let a completely unrelated FRESH
+  // candidate bump an already-shown label for no good reason. But it went too far: with retained
+  // labels never checking collision against each other either, zooming OUT — which compresses
+  // every point's screen position toward the center, unlike rotation, which mostly just moves
+  // things around — could bring two already-shown labels close enough to genuinely overlap, with
+  // nothing to stop it. tryPlace's significance-first order means that when two retained labels
+  // do end up overlapping, the bigger place wins and the smaller one eases out through the normal
+  // fade — a deserved outcome, not an arbitrary one — and fresh candidates below still can't bump
+  // a retained label, since every retained label gets its turn before any fresh one is considered.
   const keptRetained = retained.slice(0, CITY_MAX_LABELS);
+  const cellsFulfilled = new Set();
   for (const c of keptRetained) {
-    const textWidth = measureTextWidth(c.name);
-    placed.push({
-      index: c.index,
-      name: c.name,
-      lon: c.lon,
-      lat: c.lat,
-      minZoom: c.minZoom,
-      left: c.x - 4,
-      right: c.x + 5 + textWidth + 10,
-      top: c.y - 9,
-      bottom: c.y + 9,
-    });
+    if (tryPlace(c)) cellsFulfilled.add(cellKeyOf(c.x, c.y));
   }
-
-  const cellsFulfilled = new Set(keptRetained.map((c) => cellKeyOf(c.x, c.y)));
 
   // One pass over just what's near the current view (via the spatial index) instead of two
   // brute-force scans over all of `cities` — splits into real candidates (score > 0) and
