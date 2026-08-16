@@ -6,9 +6,9 @@ import { drawCityLabels, cityLabelFont } from './city-labels/render.js';
 
 // LAND_GEOJSON, BORDER_GEOJSON, LAND_DETAIL_PIECES, LAND_DETAIL_BBOXES, BORDER_DETAIL_ARCS,
 // BORDER_DETAIL_BBOXES, REGION_BORDER_ARCS, REGION_BORDER_BBOXES, REGION_LABELS,
-// LAKES_MAJOR_GEOJSON, LAKES_DETAIL_GEOJSON, MOUNTAINS, RIVERS_GEOJSON, CITIES, and THEME are
+// LAKES_MAJOR_GEOJSON, LAKES_DETAIL_GEOJSON, MOUNTAINS, CITIES, and THEME are
 // injected as globals by the HTML wrapper at build time.
-/* global LAND_GEOJSON, BORDER_GEOJSON, LAND_DETAIL_PIECES, LAND_DETAIL_BBOXES, BORDER_DETAIL_ARCS, BORDER_DETAIL_BBOXES, REGION_BORDER_ARCS, REGION_BORDER_BBOXES, REGION_LABELS, LAKES_MAJOR_GEOJSON, LAKES_DETAIL_GEOJSON, MOUNTAINS, RIVERS_GEOJSON, CITIES, THEME */
+/* global LAND_GEOJSON, BORDER_GEOJSON, LAND_DETAIL_PIECES, LAND_DETAIL_BBOXES, BORDER_DETAIL_ARCS, BORDER_DETAIL_BBOXES, REGION_BORDER_ARCS, REGION_BORDER_BBOXES, REGION_LABELS, LAKES_MAJOR_GEOJSON, LAKES_DETAIL_GEOJSON, MOUNTAINS, CITIES, THEME */
 
 // Temporary flags — mountains and region labels are getting a hand-drawn redesign, so they're
 // switched off here rather than removed: the data pipeline, curve-fitting, and recompute logic
@@ -17,7 +17,7 @@ import { drawCityLabels, cityLabelFont } from './city-labels/render.js';
 const SHOW_MOUNTAINS = false;
 const SHOW_REGION_LABELS = false;
 // On-canvas zoom readout for tuning reveal thresholds — see the draw site in renderInner.
-const SHOW_ZOOM_DEBUG = false;
+const SHOW_ZOOM_DEBUG = true;
 
 const canvas = document.getElementById('globe');
 const ctx = canvas.getContext('2d');
@@ -293,11 +293,12 @@ function renderInner() {
   ctx.fillStyle = oceanGradient;
   ctx.fill();
 
-  // Land — a flat single-color fill, no elevation/terrain tinting. Finer coastline detail (same
-  // color) fades in on top once zoomed in: LAND_GEOJSON is a coarse (~2% simplified) always-on
-  // base so the resting/at-rest view never pays for more resolution than it needs, LAND_DETAIL_PIECES
-  // is the same source simplified far less, revealing smaller islands and more accurate
-  // coastlines the coarse tier smooths away or drops entirely.
+  // Land — outline only, no fill: coastlines read against the plain ocean/background rather than
+  // a filled landmass color, for the most minimal version of the map. Finer coastline detail
+  // fades in on top once zoomed in: LAND_GEOJSON is a coarse (~2% simplified) always-on base so
+  // the resting/at-rest view never pays for more resolution than it needs, LAND_DETAIL_PIECES is
+  // the same source simplified far less, revealing smaller islands and more accurate coastlines
+  // the coarse tier smooths away or drops entirely.
   //
   // The coarse tier only actually needs to draw while the detail tier is transparent or fading
   // in — once detail reaches full opacity it completely covers the coarse shape underneath, so
@@ -311,8 +312,6 @@ function renderInner() {
   if (landDetailAlpha < 1) {
     ctx.beginPath();
     path(LAND_GEOJSON);
-    ctx.fillStyle = THEME.land;
-    ctx.fill();
     ctx.lineWidth = 0.8;
     ctx.strokeStyle = THEME.landStroke;
     ctx.stroke();
@@ -326,8 +325,6 @@ function renderInner() {
       }
     }
     smoothPathContext.flush();
-    ctx.fillStyle = THEME.land;
-    ctx.fill();
     ctx.lineWidth = 0.8;
     ctx.strokeStyle = THEME.landStroke;
     ctx.stroke();
@@ -382,22 +379,6 @@ function renderInner() {
       if (!p || p[0] < 0 || p[0] > width || p[1] < 0 || p[1] > height) continue;
       drawMountainIcon(p[0], p[1], mountainSeed(lon, lat));
     }
-  }
-
-  // Rivers (and lake centerlines that continue a river's path through a lake, rather than
-  // leaving a gap). Nothing here is always-on — each feature carries its own min_zoom (Natural
-  // Earth's curated importance ranking, rescaled to our zoom scale in build-globe-html.mjs, same
-  // idea as the mountains layer), and even the biggest rivers need real zoom before showing at
-  // all, not just before showing in full detail.
-  for (const riverFeature of RIVERS_GEOJSON.features) {
-    if (zoom <= riverFeature.properties.min_zoom) continue;
-    if (!cullByBbox(riverFeature.properties.bbox, capRadiusDeg)) continue;
-    ctx.beginPath();
-    smoothPath(riverFeature);
-    smoothPathContext.flush();
-    ctx.lineWidth = 2.5;
-    ctx.strokeStyle = THEME.river;
-    ctx.stroke();
   }
 
   // State/province borders for every country, drawn under country borders (so the country
@@ -521,10 +502,8 @@ function renderInner() {
   ctx.strokeStyle = THEME.globeOutline;
   ctx.stroke();
 
-  // Temporary debug readout — current zoom, for tuning reveal thresholds (rivers, cities, region
-  // borders, etc. all key off this same value). Drawn last, top-left, so it's always legible
-  // regardless of what's underneath. Remove once the thresholds this is being used to tune are
-  // settled.
+  // On-screen zoom readout, top-left, drawn last so it's always legible regardless of what's
+  // underneath.
   if (SHOW_ZOOM_DEBUG) {
     const label = `zoom ${zoom.toFixed(2)}`;
     ctx.font = '600 12px monospace';
