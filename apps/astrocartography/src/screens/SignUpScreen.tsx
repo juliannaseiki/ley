@@ -1,10 +1,7 @@
 import React, { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { ScreenContainer } from '../components/ScreenContainer';
-import { TextField } from '../components/TextField';
-import { GradientButton } from '../components/GradientButton';
-import { useAuth } from '../context/AuthContext';
-import { colors, fonts, spacing } from '../theme';
+import { ScreenContainer, TextField, GradientButton, colors, fonts, spacing } from '@ley/ui';
+import { useAuth } from '@ley/auth';
 
 export function SignUpScreen({ onNavigateToLogIn }: { onNavigateToLogIn: () => void }) {
   const { signUp } = useAuth();

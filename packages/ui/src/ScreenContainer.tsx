@@ -1,7 +1,7 @@
 import React, { PropsWithChildren } from 'react';
 import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { colors, spacing } from '../theme';
+import { colors, spacing } from './theme';
 
 type Props = PropsWithChildren<{ scroll?: boolean }>;
 
