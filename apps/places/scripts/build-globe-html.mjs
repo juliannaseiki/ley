@@ -279,48 +279,6 @@ const regionLabels = Array.from(largestPiecePerRegion.values())
 // straight read, no rescaling logic needed here.
 const mountains = JSON.parse(fs.readFileSync(path.join(root, 'scripts/data/mountains.json'), 'utf8'));
 
-// Rivers (and lake centerlines — segments that continue a river's path through a lake it flows
-// into, rather than leaving a visible gap where the river meets the lake). Natural Earth's global
-// ne_10m_rivers_lake_centerlines (1,455 features) on its own was missing a lot of real rivers —
-// that layer is deliberately sparse at the global scale, with the actual detail split out into
-// separate continent supplements. Only three exist (Europe, North America, Australia — no
-// supplement for South America, Asia, or Africa, a real gap in the source data itself, not
-// something fixable here), but combining all four gets meaningfully closer to complete than the
-// global layer alone: 7,997 features after merging, up from 1,455. Fetched from
-// https://github.com/nvkelso/natural-earth-vector:
-//   ne_10m_rivers_lake_centerlines.geojson, ne_10m_rivers_europe.geojson,
-//   ne_10m_rivers_north_america.geojson, ne_10m_rivers_australia.geojson
-//
-// Each source's own min_zoom (Natural Earth's curated "how important is this river" reveal
-// zoom, same idea as the mountains layer) is rescaled from their combined [2, 7.5] range to ours
-// ([2, 5]) in a one-off merge script before mapshaper ever sees the data — simplest to do once,
-// up front, rather than repeating scalerank-to-zoom logic in the renderer per feature per frame.
-// Nothing in this layer is always-on: even the biggest rivers need real zoom before they show.
-//   npx mapshaper -i rivers-merged.geojson -simplify 15% keep-shapes \
-//     -filter-fields name,min_zoom -o format=topojson quantization=1e5 rivers.json
-//
-// Lines, unlike the polygon layers elsewhere in this file, don't have an "inside" for d3-geo's
-// clipping to get backwards — no winding fix needed here.
-const riversTopology = JSON.parse(fs.readFileSync(path.join(root, 'scripts/data/rivers.json'), 'utf8'));
-const riversGeoJson = feature(riversTopology, riversTopology.objects['rivers-merged']);
-// A bbox per river, same reasoning as the border/land pieces above — cullByBbox in
-// webview-src/globe-entry.js uses this alongside the existing per-feature min_zoom check so a
-// river that has crossed its reveal threshold but sits nowhere near the current view still skips
-// tracing, not just the (much rarer) ones that haven't reached their threshold at all.
-riversGeoJson.features = riversGeoJson.features.filter((f) => f.geometry);
-// Rescaled a second time here, from the [2, 5] range baked in by the one-off merge script above to
-// [RIVER_MIN_ZOOM_FLOOR, RIVER_MIN_ZOOM_CEIL] — pushes every river's reveal point deeper without
-// re-running that merge step (which needs the original per-continent source files) and without
-// disturbing the relative importance ordering it already encodes (the biggest rivers still show
-// first, just later overall).
-const RIVER_MIN_ZOOM_FLOOR = 4;
-const RIVER_MIN_ZOOM_CEIL = 75;
-riversGeoJson.features.forEach((f) => {
-  const t = (f.properties.min_zoom - 2) / (5 - 2);
-  f.properties.min_zoom = Math.round((RIVER_MIN_ZOOM_FLOOR + t * (RIVER_MIN_ZOOM_CEIL - RIVER_MIN_ZOOM_FLOOR)) * 100) / 100;
-  f.properties.bbox = bboxOf(f.geometry.coordinates);
-});
-
 // City/town labels, shown at deep zoom. Source: GeoNames' cities1000 dump (every populated place
 // with population >= 1,000 - https://download.geonames.org/export/dump/cities1000.zip), reduced
 // to [name, lon, lat, population] tuples in scripts/data/cities.json - no polygon geometry to
@@ -418,18 +376,31 @@ lakesDetailGeoJson.features.forEach((f) => {
 const theme = {
   oceanLight: '#FFFFFF',
   oceanDeep: '#FFFFFF',
-  land: '#F4FAF2',
-  landStroke: '#DCEEDA',
-  countryBorder: '#cde2d0',
-  regionBorder: '#c9decc',
+  landStroke: '#767676',
+  countryBorder: '#767676',
+  regionBorder: '#767676',
   globeOutline: '#EAF3FA',
   cityDot: '#8FA396',
   cityLabel: '#5B655F',
   regionLabel: '#7A6A4F',
   mountainFill: '#EDE6D6',
   mountainStroke: '#5B4A38',
-  river: '#FFFFFF',
 };
+
+// Embeds `data` as `JSON.parse("...")` rather than a raw JS array/object literal. For data this
+// large (CITIES alone is 170k+ entries), parsing it as JS source means the engine has to build a
+// full AST for one enormous expression before any app code can run — JSON.parse uses a much
+// simpler, purpose-built parser that's dramatically faster for the same bytes (V8's own writeup
+// on this: https://v8.dev/blog/cost-of-javascript-2019#parsing). JSON.stringify of the JSON text
+// itself produces a correctly-escaped JS string literal for free (backslashes, quotes, control
+// chars); the only extra guard needed is against a literal "</script" substring inside any string
+// value (a place/region name, in principle), which would otherwise prematurely close the
+// surrounding <script> tag once this is spliced into the HTML template.
+function embedAsJson(data) {
+  const json = JSON.stringify(data);
+  const jsStringLiteral = JSON.stringify(json).replace(/<\/script/gi, '<\\/script');
+  return `JSON.parse(${jsStringLiteral})`;
+}
 
 const bundle = await build({
   entryPoints: [path.join(root, 'webview-src/globe-entry.js')],
@@ -454,23 +425,22 @@ const html = `<!DOCTYPE html>
 <body>
 <canvas id="globe"></canvas>
 <script>
-window.LAND_GEOJSON = ${JSON.stringify(landGeoJson)};
-window.BORDER_GEOJSON = ${JSON.stringify(borderGeoJson)};
-window.LAND_DETAIL_PIECES = ${JSON.stringify(landDetailPieces)};
-window.LAND_DETAIL_BBOXES = ${JSON.stringify(landDetailBboxes)};
-window.BORDER_DETAIL_ARCS = ${JSON.stringify(borderDetailArcs)};
-window.BORDER_DETAIL_BBOXES = ${JSON.stringify(borderDetailBboxes)};
-window.REGION_BORDER_ARCS = ${JSON.stringify(regionBorderArcs)};
-window.REGION_BORDER_BBOXES = ${JSON.stringify(regionBorderBboxes)};
-window.REGION_LABELS = ${JSON.stringify(regionLabels)};
-window.LAKES_MAJOR_GEOJSON = ${JSON.stringify(lakesMajorGeoJson)};
-window.LAKES_DETAIL_GEOJSON = ${JSON.stringify(lakesDetailGeoJson)};
-window.MOUNTAINS = ${JSON.stringify(mountains)};
-window.RIVERS_GEOJSON = ${JSON.stringify(riversGeoJson)};
-window.CITIES = ${JSON.stringify(cities)};
-window.CITY_CELLS = ${JSON.stringify(cityCellsObj)};
-window.CITY_CELL_SIZE_DEG = ${JSON.stringify(CITY_CELL_SIZE_DEG)};
-window.THEME = ${JSON.stringify(theme)};
+window.LAND_GEOJSON = ${embedAsJson(landGeoJson)};
+window.BORDER_GEOJSON = ${embedAsJson(borderGeoJson)};
+window.LAND_DETAIL_PIECES = ${embedAsJson(landDetailPieces)};
+window.LAND_DETAIL_BBOXES = ${embedAsJson(landDetailBboxes)};
+window.BORDER_DETAIL_ARCS = ${embedAsJson(borderDetailArcs)};
+window.BORDER_DETAIL_BBOXES = ${embedAsJson(borderDetailBboxes)};
+window.REGION_BORDER_ARCS = ${embedAsJson(regionBorderArcs)};
+window.REGION_BORDER_BBOXES = ${embedAsJson(regionBorderBboxes)};
+window.REGION_LABELS = ${embedAsJson(regionLabels)};
+window.LAKES_MAJOR_GEOJSON = ${embedAsJson(lakesMajorGeoJson)};
+window.LAKES_DETAIL_GEOJSON = ${embedAsJson(lakesDetailGeoJson)};
+window.MOUNTAINS = ${embedAsJson(mountains)};
+window.CITIES = ${embedAsJson(cities)};
+window.CITY_CELLS = ${embedAsJson(cityCellsObj)};
+window.CITY_CELL_SIZE_DEG = ${embedAsJson(CITY_CELL_SIZE_DEG)};
+window.THEME = ${embedAsJson(theme)};
 </script>
 <script>
 ${bundledJs}
