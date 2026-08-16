@@ -1,4 +1,4 @@
-import { supabase } from './supabase';
+import { supabase } from '@ley/auth';
 import { BirthData, BirthDataRow, fromRow } from '../types/birthData';
 
 export async function getBirthData(userId: string): Promise<BirthData | null> {

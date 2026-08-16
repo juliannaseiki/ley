@@ -1,6 +1,6 @@
 import React from 'react';
 import { StyleSheet, Text, TextInput, TextInputProps, View } from 'react-native';
-import { colors, fonts, radii, spacing } from '../theme';
+import { colors, fonts, radii, spacing } from './theme';
 
 type Props = TextInputProps & {
   label: string;

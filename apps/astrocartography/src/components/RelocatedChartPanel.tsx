@@ -11,7 +11,7 @@ import {
 import { LINE_DESCRIPTIONS } from '../lib/astro/lineDescriptions';
 import { BodyId, HouseChart, LineKind, NatalChart } from '../lib/astro/types';
 import { formatCoords } from '../lib/formatCoords';
-import { colors, fonts, radii, spacing } from '../theme';
+import { colors, fonts, radii, spacing } from '@ley/ui';
 
 type Props = {
   visible: boolean;

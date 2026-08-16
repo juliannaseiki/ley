@@ -3,11 +3,11 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Globe } from '../components/Globe';
 import { RelocatedChartPanel } from '../components/RelocatedChartPanel';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '@ley/auth';
+import { colors, fonts, spacing } from '@ley/ui';
 import { computeAstroLines, computeHouseChart, computeNatalChart } from '../lib/astro';
 import { BodyId, HouseChart, LineKind } from '../lib/astro/types';
 import { BirthData } from '../types/birthData';
-import { colors, fonts, spacing } from '../theme';
 
 export function GlobeScreen({ birthData }: { birthData: BirthData }) {
   const { signOut } = useAuth();

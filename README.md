@@ -19,12 +19,15 @@ No saved places, no recommendations yet.
   renderer, with hand-rolled pointer gestures (drag to rotate, pinch to zoom, tap to relocate) and a
   slow ambient auto-rotation when idle
 
+This repo is a **pnpm workspace monorepo**: the app lives in `apps/astrocartography`, with auth and
+UI primitives factored into `packages/*` so future apps can share them.
+
 ## Setup
 
-1. **Install dependencies**
+1. **Install dependencies** (from the repo root — installs for every app/package at once)
 
    ```
-   npm install
+   pnpm install
    ```
 
 2. **Create a Supabase project** at [supabase.com](https://supabase.com) (free tier is fine).
@@ -32,18 +35,19 @@ No saved places, no recommendations yet.
    - In **Authentication → Providers**, email/password is enabled by default. Decide whether you want
      email confirmation on sign-up (Authentication → Settings) — the sign-up screen handles both cases,
      but for the fastest local iteration you may want to disable "Confirm email" while developing.
-   - In the **SQL editor**, run the migration in `supabase/migrations/0001_init.sql` to create the
-     `birth_data` table and its row-level security policies.
-   - Copy `.env.example` to `.env` and fill in your project's URL and anon key (Project Settings → API):
+   - In the **SQL editor**, run the migration in `apps/astrocartography/supabase/migrations/0001_init.sql`
+     to create the `birth_data` table and its row-level security policies.
+   - Copy `.env.example` to `.env` **inside `apps/astrocartography`** and fill in your project's URL and
+     anon key (Project Settings → API):
 
      ```
-     cp .env.example .env
+     cp apps/astrocartography/.env.example apps/astrocartography/.env
      ```
 
 3. **Run the app**
 
    ```
-   npm run start
+   pnpm dev
    ```
 
    Then open in Expo Go, an iOS simulator, or an Android emulator.
@@ -53,26 +57,36 @@ No saved places, no recommendations yet.
 The WebView's HTML/JS is pre-bundled (via esbuild) and simplified world landmass data (via
 `world-atlas` + `topojson-client`) is inlined into `src/webview/globeHtml.ts` at build time, rather
 than loaded as a runtime asset — this sidesteps WebView local-asset path quirks on Android/iOS.
-If you change `webview-src/globe-entry.js`, regenerate it with:
+If you change `apps/astrocartography/webview-src/globe-entry.js`, regenerate it with:
 
 ```
-npm run build:globe
+pnpm build:globe
 ```
 
 ## Project layout
 
 ```
+apps/
+  astrocartography/            # the app — see below
+packages/
+  auth/                        # @ley/auth: AuthProvider/useAuth + Supabase client factory
+  ui/                          # @ley/ui: theme tokens, GradientButton/TextField/ScreenContainer, useDebouncedValue
+  config/                      # @ley/config: shared ESLint flat config
+tsconfig.base.json              # shared TypeScript compiler options, extended by every app/package
+pnpm-workspace.yaml
+```
+
+`apps/astrocartography`:
+
+```
 App.tsx                        # font loading, providers, root
 src/
-  context/AuthContext.tsx      # Supabase session state
   navigation/RootNavigator.tsx # auth -> birth data -> globe, conditional on state
   screens/                     # SignUp, LogIn, BirthData, Globe
-  components/                  # Globe (WebView wrapper), RelocatedChartPanel, form controls
+  components/                  # Globe (WebView wrapper), RelocatedChartPanel
   lib/astro/                   # ephemeris, astrocartography line math, house/angle math
   lib/geocode.ts               # Nominatim place search
   lib/birthData.ts             # Supabase reads/writes for birth_data
-  lib/supabase.ts              # Supabase client
-  theme/                       # colors, fonts, spacing
 webview-src/globe-entry.js     # source for the WebView canvas globe renderer
 scripts/build-globe-html.mjs   # bundles the above into src/webview/globeHtml.ts
 supabase/migrations/           # SQL schema + RLS policies

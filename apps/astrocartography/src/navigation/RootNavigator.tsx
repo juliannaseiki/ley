@@ -1,13 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '@ley/auth';
 import { getBirthData } from '../lib/birthData';
 import { BirthData } from '../types/birthData';
 import { SignUpScreen } from '../screens/SignUpScreen';
 import { LogInScreen } from '../screens/LogInScreen';
 import { BirthDataScreen } from '../screens/BirthDataScreen';
 import { GlobeScreen } from '../screens/GlobeScreen';
-import { colors } from '../theme';
+import { colors } from '@ley/ui';
 
 type AuthMode = 'signUp' | 'logIn';
 
