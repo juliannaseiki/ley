@@ -10,6 +10,10 @@ const CITY_LABEL_FONT_STYLE = "italic 500";
 const CITY_LABEL_FONT_FAMILY = "Georgia, 'Times New Roman', serif";
 const CITY_DOT_RADIUS = 1.6;
 const CITY_LABEL_OFFSET_X = 5;
+// A white halo behind each name keeps it legible over borders/coastlines/other labels crossing
+// underneath, without needing a solid background pill.
+const CITY_LABEL_OUTLINE_COLOR = '#FFFFFF';
+const CITY_LABEL_OUTLINE_WIDTH = 3;
 
 export function cityLabelFont(zoom) {
   return `${CITY_LABEL_FONT_STYLE} ${fontSizeForZoom(zoom)}px ${CITY_LABEL_FONT_FAMILY}`;
@@ -34,6 +38,10 @@ export function drawCityLabels(ctx, store, { projection, isFrontFacing, width, h
     ctx.arc(p[0], p[1], CITY_DOT_RADIUS, 0, Math.PI * 2);
     ctx.fillStyle = dotColor;
     ctx.fill();
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = CITY_LABEL_OUTLINE_WIDTH;
+    ctx.strokeStyle = CITY_LABEL_OUTLINE_COLOR;
+    ctx.strokeText(entry.name, p[0] + CITY_LABEL_OFFSET_X, p[1]);
     ctx.fillStyle = textColor;
     ctx.fillText(entry.name, p[0] + CITY_LABEL_OFFSET_X, p[1]);
   }

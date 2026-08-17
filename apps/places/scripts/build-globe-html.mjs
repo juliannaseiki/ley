@@ -294,7 +294,7 @@ const mountains = JSON.parse(fs.readFileSync(path.join(root, 'scripts/data/mount
 // log-population spread wants. These constants keep every population tier reachable within
 // that range; MAX_ZOOM going higher than this is about the globe surface feeling deep to
 // explore, not a requirement for any city tier to ever show up.
-const CITY_BASE_MIN_ZOOM = 2.8; // cities start a bit after region borders (fade ends at zoom 2.2) are fully in
+const CITY_BASE_MIN_ZOOM = 5; // cities start at the same zoom as state/province borders
 const CITY_LOG_POP_MAX = 7.4; // roughly Tokyo-scale (~37M) - the top of the log-population range
 const CITY_ZOOM_PER_LOG_POP = 1.3;
 function minZoomForPopulation(population) {

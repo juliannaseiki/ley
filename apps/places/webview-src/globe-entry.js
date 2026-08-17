@@ -125,10 +125,14 @@ const MAX_ZOOM = 100;
 // comfortable pinch (roughly tripling finger distance) already clears every city reveal
 // threshold.
 const PINCH_ZOOM_POWER = 1.8;
-// Region borders ramp in smoothly across this zoom range, rather than snapping on at a single
-// threshold — same idea as Apple Maps/Flighty showing more map detail the deeper you zoom in.
-const REGION_BORDER_FADE_START = 1.4;
-const REGION_BORDER_FADE_END = 2.2;
+// Land/lake/country-border "detail" tiers ramp in smoothly across this zoom range, rather than
+// snapping on at a single threshold — same idea as Apple Maps/Flighty showing more map detail the
+// deeper you zoom in.
+const DETAIL_FADE_START = 1.4;
+const DETAIL_FADE_END = 2.2;
+// State/province borders are a hard cutoff, not a fade — they simply don't exist on screen at all
+// below this zoom, and appear at full opacity once past it.
+const STATE_BORDER_MIN_ZOOM = 5;
 // The city-label selection algorithm's own tuning (CITY_MAX_LABELS, CITY_GRID_COLS/ROWS) now
 // lives entirely in city-labels/selection.js — this file only imports the two constants that also
 // affect drawing here: CITY_BASE_MIN_ZOOM (the fade-eligibility gate below) and
@@ -304,15 +308,11 @@ function renderInner() {
   // in — once detail reaches full opacity it completely covers the coarse shape underneath, so
   // drawing (and clipping, the more expensive part) the coarse tier too past that point is pure
   // wasted work. Same reasoning applies everywhere else a coarse/detail pair appears below.
-  const landDetailAlpha = clamp(
-    (zoom - REGION_BORDER_FADE_START) / (REGION_BORDER_FADE_END - REGION_BORDER_FADE_START),
-    0,
-    1
-  );
+  const landDetailAlpha = clamp((zoom - DETAIL_FADE_START) / (DETAIL_FADE_END - DETAIL_FADE_START), 0, 1);
   if (landDetailAlpha < 1) {
     ctx.beginPath();
     path(LAND_GEOJSON);
-    ctx.lineWidth = 0.8;
+    ctx.lineWidth = 0.5;
     ctx.strokeStyle = THEME.landStroke;
     ctx.stroke();
   }
@@ -325,7 +325,7 @@ function renderInner() {
       }
     }
     smoothPathContext.flush();
-    ctx.lineWidth = 0.8;
+    ctx.lineWidth = 0.5;
     ctx.strokeStyle = THEME.landStroke;
     ctx.stroke();
     ctx.globalAlpha = 1;
@@ -340,11 +340,7 @@ function renderInner() {
   // design. LAKES_DETAIL_GEOJSON (~1,350 lakes,
   // covers regionally-notable ones the major tier misses) is 10x finer and only fades in once
   // zoomed in, so that cost is never paid at rest.
-  const lakeDetailAlpha = clamp(
-    (zoom - REGION_BORDER_FADE_START) / (REGION_BORDER_FADE_END - REGION_BORDER_FADE_START),
-    0,
-    1
-  );
+  const lakeDetailAlpha = clamp((zoom - DETAIL_FADE_START) / (DETAIL_FADE_END - DETAIL_FADE_START), 0, 1);
   if (lakeDetailAlpha < 1) {
     ctx.beginPath();
     path(LAKES_MAJOR_GEOJSON);
@@ -382,14 +378,10 @@ function renderInner() {
   }
 
   // State/province borders for every country, drawn under country borders (so the country
-  // outline reads as the more prominent line) and only faded in once zoomed in a bit — at full
-  // zoom-out, this level of detail is just noise, the same reasoning as the line labels.
-  const regionBorderAlpha = clamp(
-    (zoom - REGION_BORDER_FADE_START) / (REGION_BORDER_FADE_END - REGION_BORDER_FADE_START),
-    0,
-    1
-  );
-  if (regionBorderAlpha > 0) {
+  // outline reads as the more prominent line). A hard cutoff rather than a fade — they simply
+  // don't exist on screen at all until STATE_BORDER_MIN_ZOOM, at full zoom-out this level of
+  // detail is just noise, the same reasoning as the line labels.
+  if (zoom >= STATE_BORDER_MIN_ZOOM) {
     ctx.beginPath();
     for (let i = 0; i < REGION_BORDER_ARCS.length; i++) {
       if (cullByBbox(REGION_BORDER_BBOXES[i], capRadiusDeg)) {
@@ -401,9 +393,7 @@ function renderInner() {
     }
     ctx.lineWidth = 0.4;
     ctx.strokeStyle = THEME.regionBorder;
-    ctx.globalAlpha = regionBorderAlpha;
     ctx.stroke();
-    ctx.globalAlpha = 1;
   }
 
   // Region name labels — the recompute (layoutCurvedLabel/recomputeRegionLabels) only runs at
@@ -449,11 +439,7 @@ function renderInner() {
   // Country borders — coarse tier always-on, finer tier fades in on top once zoomed in, same
   // two-tier idea as the land/coastline detail above (including skipping the coarse tier once
   // the detail tier is fully opaque and covering it).
-  const borderDetailAlpha = clamp(
-    (zoom - REGION_BORDER_FADE_START) / (REGION_BORDER_FADE_END - REGION_BORDER_FADE_START),
-    0,
-    1
-  );
+  const borderDetailAlpha = clamp((zoom - DETAIL_FADE_START) / (DETAIL_FADE_END - DETAIL_FADE_START), 0, 1);
   if (borderDetailAlpha < 1) {
     ctx.beginPath();
     path(BORDER_GEOJSON);
