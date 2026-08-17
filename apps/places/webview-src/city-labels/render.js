@@ -9,7 +9,8 @@ import { opacityFor } from './stateMachine.js';
 const CITY_LABEL_FONT_STYLE = "italic 500";
 const CITY_LABEL_FONT_FAMILY = "Georgia, 'Times New Roman', serif";
 const CITY_DOT_RADIUS = 1.6;
-const CITY_LABEL_OFFSET_X = 5;
+const CITY_LABEL_OFFSET_X = 3;
+const CITY_LABEL_OFFSET_Y = 0.5;
 // A white halo behind each name keeps it legible over borders/coastlines/other labels crossing
 // underneath, without needing a solid background pill.
 const CITY_LABEL_OUTLINE_COLOR = '#FFFFFF';
@@ -26,7 +27,7 @@ export function drawCityLabels(ctx, store, { projection, isFrontFacing, width, h
   if (store.size === 0) return;
   ctx.font = cityLabelFont(zoom);
   ctx.textAlign = 'left';
-  ctx.textBaseline = 'middle';
+  ctx.textBaseline = 'top';
   for (const entry of store.values()) {
     const alpha = opacityFor(entry, now);
     if (alpha <= 0) continue;
@@ -41,9 +42,9 @@ export function drawCityLabels(ctx, store, { projection, isFrontFacing, width, h
     ctx.lineJoin = 'round';
     ctx.lineWidth = CITY_LABEL_OUTLINE_WIDTH;
     ctx.strokeStyle = CITY_LABEL_OUTLINE_COLOR;
-    ctx.strokeText(entry.name, p[0] + CITY_LABEL_OFFSET_X, p[1]);
+    ctx.strokeText(entry.name, p[0] + CITY_LABEL_OFFSET_X, p[1] + CITY_LABEL_OFFSET_Y);
     ctx.fillStyle = textColor;
-    ctx.fillText(entry.name, p[0] + CITY_LABEL_OFFSET_X, p[1]);
+    ctx.fillText(entry.name, p[0] + CITY_LABEL_OFFSET_X, p[1] + CITY_LABEL_OFFSET_Y);
   }
   ctx.globalAlpha = 1;
   ctx.textAlign = 'center';

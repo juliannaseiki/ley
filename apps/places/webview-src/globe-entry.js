@@ -6,8 +6,8 @@ import { drawCityLabels, cityLabelFont } from './city-labels/render.js';
 
 // LAND_GEOJSON, BORDER_GEOJSON, LAND_DETAIL_PIECES, LAND_DETAIL_BBOXES, BORDER_DETAIL_ARCS,
 // BORDER_DETAIL_BBOXES, REGION_BORDER_ARCS, REGION_BORDER_BBOXES, REGION_LABELS,
-// CITIES, and THEME are injected as globals by the HTML wrapper at build time.
-/* global LAND_GEOJSON, BORDER_GEOJSON, LAND_DETAIL_PIECES, LAND_DETAIL_BBOXES, BORDER_DETAIL_ARCS, BORDER_DETAIL_BBOXES, REGION_BORDER_ARCS, REGION_BORDER_BBOXES, REGION_LABELS, CITIES, THEME */
+// US_STATE_LABELS, CITIES, and THEME are injected as globals by the HTML wrapper at build time.
+/* global LAND_GEOJSON, BORDER_GEOJSON, LAND_DETAIL_PIECES, LAND_DETAIL_BBOXES, BORDER_DETAIL_ARCS, BORDER_DETAIL_BBOXES, REGION_BORDER_ARCS, REGION_BORDER_BBOXES, REGION_LABELS, US_STATE_LABELS, CITIES, THEME */
 
 // Temporary flag — region labels are getting a hand-drawn redesign, so they're switched off here
 // rather than removed: the curve-fitting and recompute logic underneath is all still intact and
@@ -233,6 +233,17 @@ const REGION_LABEL_DESCENT = 5;
 const REGION_LABEL_MAX_COUNT = 6;
 const REGION_LABEL_RETAIN_HYSTERESIS = 0.4;
 const REGION_LABEL_SAMPLE_STEPS = 240;
+
+// US state abbreviation labels (Apple Maps-style — plain, bold, dead center in the state, all
+// shown together rather than curved/staggered like the region name labels above). Bold sans-serif
+// rather than the city labels' italic serif, so the two read as distinct kinds of information at a
+// glance, but the same fill color as city labels (THEME.cityLabel, at the draw site) so they read
+// as part of the same map-label family rather than a third, competing color. Same white-halo
+// technique as city labels (see city-labels/render.js) for legibility crossing over state/country
+// border lines and coastlines underneath.
+const US_STATE_LABEL_FONT = '700 11px -apple-system, BlinkMacSystemFont, system-ui, sans-serif';
+const US_STATE_LABEL_OUTLINE_COLOR = '#FFFFFF';
+const US_STATE_LABEL_OUTLINE_WIDTH = 3;
 let regionLabels = []; // [{ name, lon, lat, minZoom, glyphs: [{lon, lat, char, width}], left, right, top, bottom, fadeStartAt }]
 let fadingOutRegionLabels = []; // [{ name, glyphs, fadeOutStartAt }]
 
@@ -427,6 +438,29 @@ function renderInner() {
     ctx.globalAlpha = borderDetailAlpha;
     ctx.stroke();
     ctx.globalAlpha = 1;
+  }
+
+  // US state abbreviations — same reveal zoom as the state borders themselves (see
+  // STATE_BORDER_MIN_ZOOM above); every state's label appears at once rather than a per-state
+  // reveal, matching Apple Maps rather than the population/area-scaled reveal city and (disabled)
+  // region-name labels use.
+  if (zoom >= STATE_BORDER_MIN_ZOOM) {
+    ctx.font = US_STATE_LABEL_FONT;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineJoin = 'round';
+    for (const [abbr, lon, lat] of US_STATE_LABELS) {
+      if (!isFrontFacing([lon, lat])) continue;
+      const p = projection([lon, lat]);
+      if (!p || p[0] < 0 || p[0] > width || p[1] < 0 || p[1] > height) continue;
+      ctx.lineWidth = US_STATE_LABEL_OUTLINE_WIDTH;
+      ctx.strokeStyle = US_STATE_LABEL_OUTLINE_COLOR;
+      ctx.strokeText(abbr, p[0], p[1]);
+      ctx.fillStyle = THEME.cityLabel;
+      ctx.fillText(abbr, p[0], p[1]);
+    }
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
   }
 
   // City labels — deepest level of map detail, so they only start appearing well into the region
