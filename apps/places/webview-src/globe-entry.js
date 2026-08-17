@@ -6,15 +6,13 @@ import { drawCityLabels, cityLabelFont } from './city-labels/render.js';
 
 // LAND_GEOJSON, BORDER_GEOJSON, LAND_DETAIL_PIECES, LAND_DETAIL_BBOXES, BORDER_DETAIL_ARCS,
 // BORDER_DETAIL_BBOXES, REGION_BORDER_ARCS, REGION_BORDER_BBOXES, REGION_LABELS,
-// LAKES_MAJOR_GEOJSON, LAKES_DETAIL_GEOJSON, MOUNTAINS, CITIES, and THEME are
-// injected as globals by the HTML wrapper at build time.
-/* global LAND_GEOJSON, BORDER_GEOJSON, LAND_DETAIL_PIECES, LAND_DETAIL_BBOXES, BORDER_DETAIL_ARCS, BORDER_DETAIL_BBOXES, REGION_BORDER_ARCS, REGION_BORDER_BBOXES, REGION_LABELS, LAKES_MAJOR_GEOJSON, LAKES_DETAIL_GEOJSON, MOUNTAINS, CITIES, THEME */
+// CITIES, and THEME are injected as globals by the HTML wrapper at build time.
+/* global LAND_GEOJSON, BORDER_GEOJSON, LAND_DETAIL_PIECES, LAND_DETAIL_BBOXES, BORDER_DETAIL_ARCS, BORDER_DETAIL_BBOXES, REGION_BORDER_ARCS, REGION_BORDER_BBOXES, REGION_LABELS, CITIES, THEME */
 
-// Temporary flags — mountains and region labels are getting a hand-drawn redesign, so they're
-// switched off here rather than removed: the data pipeline, curve-fitting, and recompute logic
-// underneath are all still intact and ready to reuse once new artwork/fonts are ready, this just
-// skips drawing (and, for region labels, the recompute itself) in the meantime.
-const SHOW_MOUNTAINS = false;
+// Temporary flag — region labels are getting a hand-drawn redesign, so they're switched off here
+// rather than removed: the curve-fitting and recompute logic underneath is all still intact and
+// ready to reuse once new artwork/fonts are ready, this just skips the recompute and drawing in
+// the meantime.
 const SHOW_REGION_LABELS = false;
 // On-canvas zoom readout for tuning reveal thresholds — see the draw site in renderInner.
 const SHOW_ZOOM_DEBUG = true;
@@ -125,7 +123,7 @@ const MAX_ZOOM = 100;
 // comfortable pinch (roughly tripling finger distance) already clears every city reveal
 // threshold.
 const PINCH_ZOOM_POWER = 1.8;
-// Land/lake/country-border "detail" tiers ramp in smoothly across this zoom range, rather than
+// Land/country-border "detail" tiers ramp in smoothly across this zoom range, rather than
 // snapping on at a single threshold — same idea as Apple Maps/Flighty showing more map detail the
 // deeper you zoom in.
 const DETAIL_FADE_START = 1.4;
@@ -331,52 +329,6 @@ function renderInner() {
     ctx.globalAlpha = 1;
   }
 
-  // Lakes and other inland water — filled with the exact same gradient as the ocean (rather than
-  // a separate flat white) so they read as one continuous idea of "water" instead of two
-  // similar-but-not-quite-identical whites.
-  //
-  // Two tiers, same idea as region borders/cities: LAKES_MAJOR_GEOJSON (the ~400 largest lakes
-  // worldwide, at land's own coarse resolution) draws every frame unconditionally — cheap by
-  // design. LAKES_DETAIL_GEOJSON (~1,350 lakes,
-  // covers regionally-notable ones the major tier misses) is 10x finer and only fades in once
-  // zoomed in, so that cost is never paid at rest.
-  const lakeDetailAlpha = clamp((zoom - DETAIL_FADE_START) / (DETAIL_FADE_END - DETAIL_FADE_START), 0, 1);
-  if (lakeDetailAlpha < 1) {
-    ctx.beginPath();
-    path(LAKES_MAJOR_GEOJSON);
-    ctx.fillStyle = oceanGradient;
-    ctx.fill();
-  }
-  if (lakeDetailAlpha > 0) {
-    ctx.globalAlpha = lakeDetailAlpha;
-    ctx.beginPath();
-    for (const lakeFeature of LAKES_DETAIL_GEOJSON.features) {
-      if (cullByBbox(lakeFeature.properties.bbox, capRadiusDeg)) smoothPath(lakeFeature);
-    }
-    smoothPathContext.flush();
-    ctx.fillStyle = oceanGradient;
-    ctx.fill();
-    ctx.globalAlpha = 1;
-  }
-
-  // Mountain icons — a Middle-earth-map-style flourish: illustrated peaks stamped at named
-  // mountain locations (see build-globe-html.mjs) rather than left to plain terrain color. Only
-  // 633 points worldwide, so unlike cities/regions this doesn't need the gesture-end-recompute +
-  // cache architecture — a direct per-frame scan is cheap enough at this size. Drawn at a fixed
-  // pixel size regardless of zoom (translated into place, not scaled), the same "always the same
-  // size" fix applied to the region labels — simpler and more predictable than trying to size the
-  // icon to some geographic footprint.
-  if (SHOW_MOUNTAINS) {
-    for (const mountain of MOUNTAINS) {
-      const [, lon, lat, minZoom] = mountain; // name unused for now — no label yet, just the icon
-      if (zoom <= minZoom) continue;
-      if (!isFrontFacing([lon, lat])) continue;
-      const p = projection([lon, lat]);
-      if (!p || p[0] < 0 || p[0] > width || p[1] < 0 || p[1] > height) continue;
-      drawMountainIcon(p[0], p[1], mountainSeed(lon, lat));
-    }
-  }
-
   // State/province borders for every country, drawn under country borders (so the country
   // outline reads as the more prominent line). A hard cutoff rather than a fade — they simply
   // don't exist on screen at all until STATE_BORDER_MIN_ZOOM, at full zoom-out this level of
@@ -503,73 +455,6 @@ function renderInner() {
   }
 }
 
-// Deterministic hash of a mountain's own (lon, lat) into a pseudo-random integer seed — every
-// mountain gets a fixed, individually-jittered cluster shape (computed the same way every frame,
-// not re-randomized each time, which would make it crawl/flicker as the globe rotates), but
-// neighboring mountains don't all look like a stamped repeat of the same icon.
-function mountainSeed(lon, lat) {
-  const h = Math.sin(lon * 12.9898 + lat * 78.233) * 43758.5453;
-  return Math.floor((h - Math.floor(h)) * 2147483647);
-}
-
-// A hand-drawn-style mountain cluster, closer to the sketched relief symbols on old and
-// fantasy-style maps than a clean geometric icon: several overlapping peaks with irregular
-// (jittered, not perfectly triangular) outlines, shaded with hachures — short pen strokes along
-// each peak's shadowed slope — rather than a flat fill block. seed (see mountainSeed) drives a
-// small deterministic PRNG so peak count/height/width/jitter vary per mountain.
-function drawMountainIcon(x, y, seed) {
-  ctx.save();
-  ctx.translate(x, y);
-
-  let s = seed;
-  function rand() {
-    s = (s * 1103515245 + 12345) & 0x7fffffff;
-    return s / 0x7fffffff;
-  }
-
-  const peakCount = 3 + Math.floor(rand() * 3); // 3-5 peaks
-  const spread = 16;
-  ctx.lineJoin = 'round';
-  ctx.fillStyle = THEME.mountainFill;
-  ctx.strokeStyle = THEME.mountainStroke;
-
-  for (let i = 0; i < peakCount; i++) {
-    const jitter = () => (rand() - 0.5) * 1.4;
-    const baseX = -spread / 2 + (spread * i) / Math.max(peakCount - 1, 1) + jitter();
-    const isMiddlePeak = i === Math.floor(peakCount / 2);
-    const apex = 7 + rand() * 5 + (isMiddlePeak ? 3 : 0);
-    const halfWidth = 3.5 + rand() * 2;
-
-    // An irregular silhouette — five jittered points rather than a clean three-point triangle,
-    // sketched as straight segments rather than a smooth curve, mimicking a quick pen outline.
-    ctx.beginPath();
-    ctx.moveTo(baseX - halfWidth, 0);
-    ctx.lineTo(baseX - halfWidth * 0.45 + jitter(), -apex * 0.5 + jitter());
-    ctx.lineTo(baseX + jitter(), -apex);
-    ctx.lineTo(baseX + halfWidth * 0.5 + jitter(), -apex * 0.45 + jitter());
-    ctx.lineTo(baseX + halfWidth, 0);
-    ctx.closePath();
-    ctx.lineWidth = 0.9;
-    ctx.fill();
-    ctx.stroke();
-
-    // Hachures — a few short strokes climbing the shadowed (right) side of the peak, the classic
-    // pen-and-ink technique for suggesting a slope's form without a flat tone.
-    ctx.lineWidth = 0.6;
-    ctx.beginPath();
-    for (let h = 1; h <= 3; h++) {
-      const t = h / 4;
-      const hx = baseX + halfWidth * (0.15 + t * 0.5);
-      const hy = -apex * (0.85 - t * 0.7);
-      ctx.moveTo(hx, hy);
-      ctx.lineTo(hx + 1.6, hy + 2.4);
-    }
-    ctx.stroke();
-  }
-
-  ctx.restore();
-}
-
 // Whether a [lon, lat] point currently faces the viewer, given the globe's rotation. Thin wrapper
 // over city-labels/geo.js's parameterized version (which the label modules also use directly,
 // without this closure) — kept as a same-signature wrapper here rather than rewriting every one of
@@ -579,8 +464,8 @@ function isFrontFacing([lon, lat]) {
 }
 
 // Once zoomed in enough that the canvas shows only a slice of the front hemisphere, most of a
-// detail layer's geometry (land-detail polygons, border/region-border arcs, rivers, lakes) is
-// still technically "front-facing" by isFrontFacing's hemisphere test but projects way outside the
+// detail layer's geometry (land-detail polygons, border/region-border arcs) is still technically
+// "front-facing" by isFrontFacing's hemisphere test but projects way outside the
 // canvas — full path tracing (project every point, emit canvas path commands) still happens for
 // all of it every frame otherwise, for zero visible benefit. capRadiusDeg is the farthest angular
 // distance from the current look-at point that can possibly land inside the canvas rectangle; a

@@ -264,21 +264,6 @@ const regionLabels = Array.from(largestPiecePerRegion.values())
     ];
   });
 
-// Mountain icons — a Middle-earth-map-style flourish: illustrated peaks stamped at named mountain
-// locations instead of leaving terrain to plain flat color. Source: Natural Earth's
-// ne_10m_geography_regions_elevation_points, filtered to featurecla === 'mountain' (633 named
-// peaks worldwide, Everest down to regionally-notable ones), fetched from
-// https://github.com/nvkelso/natural-earth-vector. No mapshaper step — these are standalone
-// points with no geometry to simplify, just [name, lon, lat, min_zoom] pulled straight from the
-// source and written to scripts/data/mountains.json.
-//
-// Natural Earth ships its own scalerank/min_zoom for this layer (their own curated "how important
-// is this peak" ranking) — rescaled here from their [4, 8] range to ours, so Everest shows up
-// early like a landmark while more obscure peaks need real zoom, the same reveal idea already
-// used for cities/regions. Already computed into scripts/data/mountains.json, so this is just a
-// straight read, no rescaling logic needed here.
-const mountains = JSON.parse(fs.readFileSync(path.join(root, 'scripts/data/mountains.json'), 'utf8'));
-
 // City/town labels, shown at deep zoom. Source: GeoNames' cities1000 dump (every populated place
 // with population >= 1,000 - https://download.geonames.org/export/dump/cities1000.zip), reduced
 // to [name, lon, lat, population] tuples in scripts/data/cities.json - no polygon geometry to
@@ -323,56 +308,6 @@ cities.forEach(([, lon, lat], index) => {
 });
 const cityCellsObj = Object.fromEntries(cityCells);
 
-// Inland water — lakes and other bodies of water, filled the same white as the ocean so they
-// read as "water" rather than land-colored gaps. world-atlas's land layer doesn't carve lakes
-// out as holes at all (too coarse a resolution to bother), so this is its own source: Natural
-// Earth, fetched from https://github.com/nvkelso/natural-earth-vector.
-//
-// Two tiers, same idea as region borders/cities — a coarse layer that's always drawn, and a
-// finer layer that only costs anything once zoomed in:
-//   - lakesMajorGeoJson: ne_50m_lakes (~400 of the largest lakes worldwide), simplified 5%.
-//     Matches the ~110m resolution of the land/ocean/border layers it's drawn alongside every
-//     frame, including through continuous idle auto-rotation — cheap by design, not just by luck.
-//   - lakesDetailGeoJson: ne_10m_lakes (~1,350 lakes — covers regionally-notable ones the 50m
-//     tier misses, e.g. Lake Champlain), simplified 8%, faded in over the same zoom range as
-//     region borders (reusing REGION_BORDER_FADE_START/END in the renderer, not a separate
-//     constant) so its cost only applies once actually zoomed in, rather than every frame forever
-//     at rest. Drawing the full 10m set unconditionally made the globe painfully slow — a
-//     resolution that fine has no business being an always-on layer.
-//
-// keep-shapes matters here in a way it didn't for the coastline/border layers: without it, most
-// lakes are small enough relative to the whole dataset that simplification collapsed them to
-// nothing — 285 of 412 "major" lakes (Tahoe, the Dead Sea, Salton Sea included) came out with
-// null geometry at a plain 5% simplify, silently dropped rather than just less detailed.
-//   npx mapshaper -i ne_50m_lakes.geojson -simplify 5% keep-shapes -filter-fields name \
-//     -o format=topojson quantization=1e5 lakes-major.json
-//   npx mapshaper -i ne_10m_lakes.geojson -simplify 15% keep-shapes -filter-fields name \
-//     -o format=topojson quantization=1e5 lakes-detail.json
-//
-// See ringSignedArea/rewindGeometry above (defined once, next to the land/country loading that
-// needs the same fix) for why every filled polygon here gets rewound before injection.
-function loadLakes(fileName, objectKey) {
-  const topology = JSON.parse(fs.readFileSync(path.join(root, 'scripts/data', fileName), 'utf8'));
-  const geoJson = feature(topology, topology.objects[objectKey]);
-  geoJson.features = geoJson.features.filter((f) => f.geometry);
-  geoJson.features.forEach((f) => rewindGeometry(f.geometry));
-  return geoJson;
-}
-
-const lakesMajorGeoJson = loadLakes('lakes-major.json', 'ne_50m_lakes');
-// Deliberately NOT excluding lakes already present in the major tier by name: the two tiers
-// aren't the same shape at different resolutions of the same authoritative extent — the 50m
-// source for e.g. Lake Champlain caps out at 44.94°N, south of the US/Canada border, while the
-// 10m source correctly continues to 45.08°N into Quebec. An earlier version deduped by name to
-// save a little render time, which silently threw away the detail tier's more accurate shape for
-// every lake that happened to also appear (usually less accurately) in the coarse tier — worse
-// trade than the extra draw cost, which only applies once actually zoomed in anyway.
-const lakesDetailGeoJson = loadLakes('lakes-detail.json', 'ne_10m_lakes');
-// Bbox per lake, same reasoning as the other detail tiers — see bboxOf above.
-lakesDetailGeoJson.features.forEach((f) => {
-  f.properties.bbox = bboxOf(f.geometry.coordinates);
-});
-
 const theme = {
   oceanLight: '#FFFFFF',
   oceanDeep: '#FFFFFF',
@@ -383,8 +318,6 @@ const theme = {
   cityDot: '#8FA396',
   cityLabel: '#5B655F',
   regionLabel: '#7A6A4F',
-  mountainFill: '#EDE6D6',
-  mountainStroke: '#5B4A38',
 };
 
 // Embeds `data` as `JSON.parse("...")` rather than a raw JS array/object literal. For data this
@@ -434,9 +367,6 @@ window.BORDER_DETAIL_BBOXES = ${embedAsJson(borderDetailBboxes)};
 window.REGION_BORDER_ARCS = ${embedAsJson(regionBorderArcs)};
 window.REGION_BORDER_BBOXES = ${embedAsJson(regionBorderBboxes)};
 window.REGION_LABELS = ${embedAsJson(regionLabels)};
-window.LAKES_MAJOR_GEOJSON = ${embedAsJson(lakesMajorGeoJson)};
-window.LAKES_DETAIL_GEOJSON = ${embedAsJson(lakesDetailGeoJson)};
-window.MOUNTAINS = ${embedAsJson(mountains)};
 window.CITIES = ${embedAsJson(cities)};
 window.CITY_CELLS = ${embedAsJson(cityCellsObj)};
 window.CITY_CELL_SIZE_DEG = ${embedAsJson(CITY_CELL_SIZE_DEG)};
