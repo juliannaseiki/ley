@@ -314,7 +314,7 @@ const theme = {
   landStroke: '#767676',
   countryBorder: '#767676',
   regionBorder: '#767676',
-  globeOutline: '#EAF3FA',
+  globeOutline: '#767676',
   cityDot: '#8FA396',
   cityLabel: '#5B655F',
   regionLabel: '#7A6A4F',

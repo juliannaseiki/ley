@@ -123,14 +123,29 @@ const MAX_ZOOM = 100;
 // comfortable pinch (roughly tripling finger distance) already clears every city reveal
 // threshold.
 const PINCH_ZOOM_POWER = 1.8;
-// Land/country-border "detail" tiers ramp in smoothly across this zoom range, rather than
-// snapping on at a single threshold — same idea as Apple Maps/Flighty showing more map detail the
-// deeper you zoom in.
-const DETAIL_FADE_START = 1.4;
-const DETAIL_FADE_END = 2.2;
+// The land "detail" tier ramps in smoothly across this zoom range, rather than snapping on at a
+// single threshold — same idea as Apple Maps/Flighty showing more map detail the deeper you zoom
+// in. Pushed out to a much deeper zoom than a purely visual choice would call for: the coarse
+// tier is what's on screen for most of the zoom range now, so there's simply far fewer vertices
+// to re-trace on every frame during ordinary panning/pinching — a static, zoom-only threshold
+// rather than switching tiers based on live interaction state, which read as popping/flickering
+// when it was tried. Land gets this deep threshold (rather than sharing one with country borders,
+// like it used to) because it's the more expensive layer to trace either way — its detail tier is
+// smoothPath-rendered (quadratic-curve corner rounding, extra per-vertex math on top of the raw
+// point count the border layers don't pay).
+const LAND_DETAIL_FADE_START = 10;
+const LAND_DETAIL_FADE_END = 10.8;
 // State/province borders are a hard cutoff, not a fade — they simply don't exist on screen at all
 // below this zoom, and appear at full opacity once past it.
 const STATE_BORDER_MIN_ZOOM = 5;
+// Country-border detail intentionally finishes fading in by the same zoom state borders appear at
+// (not pushed out deep like land's, above) — state border data has always been full-fidelity with
+// no coarse tier of its own, so if country borders were still coarse (or mid-fade) by the time
+// state borders switch on, the country outline would visibly read as cruder than the state lines
+// sitting right next to it. Tied to STATE_BORDER_MIN_ZOOM by construction, not just matched by
+// coincidence, so the two can't drift apart again if either threshold changes later.
+const BORDER_DETAIL_FADE_END = STATE_BORDER_MIN_ZOOM;
+const BORDER_DETAIL_FADE_START = STATE_BORDER_MIN_ZOOM - 0.8;
 // The city-label selection algorithm's own tuning (CITY_MAX_LABELS, CITY_GRID_COLS/ROWS) now
 // lives entirely in city-labels/selection.js — this file only imports the two constants that also
 // affect drawing here: CITY_BASE_MIN_ZOOM (the fade-eligibility gate below) and
@@ -306,7 +321,7 @@ function renderInner() {
   // in — once detail reaches full opacity it completely covers the coarse shape underneath, so
   // drawing (and clipping, the more expensive part) the coarse tier too past that point is pure
   // wasted work. Same reasoning applies everywhere else a coarse/detail pair appears below.
-  const landDetailAlpha = clamp((zoom - DETAIL_FADE_START) / (DETAIL_FADE_END - DETAIL_FADE_START), 0, 1);
+  const landDetailAlpha = clamp((zoom - LAND_DETAIL_FADE_START) / (LAND_DETAIL_FADE_END - LAND_DETAIL_FADE_START), 0, 1);
   if (landDetailAlpha < 1) {
     ctx.beginPath();
     path(LAND_GEOJSON);
@@ -391,7 +406,7 @@ function renderInner() {
   // Country borders — coarse tier always-on, finer tier fades in on top once zoomed in, same
   // two-tier idea as the land/coastline detail above (including skipping the coarse tier once
   // the detail tier is fully opaque and covering it).
-  const borderDetailAlpha = clamp((zoom - DETAIL_FADE_START) / (DETAIL_FADE_END - DETAIL_FADE_START), 0, 1);
+  const borderDetailAlpha = clamp((zoom - BORDER_DETAIL_FADE_START) / (BORDER_DETAIL_FADE_END - BORDER_DETAIL_FADE_START), 0, 1);
   if (borderDetailAlpha < 1) {
     ctx.beginPath();
     path(BORDER_GEOJSON);
@@ -433,10 +448,10 @@ function renderInner() {
     now: performance.now(),
   });
 
-  // Thin globe edge outline.
+  // Globe edge outline, same weight as country borders.
   ctx.beginPath();
   path({ type: 'Sphere' });
-  ctx.lineWidth = 1.5;
+  ctx.lineWidth = 0.5;
   ctx.strokeStyle = THEME.globeOutline;
   ctx.stroke();
 
