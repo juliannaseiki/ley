@@ -264,6 +264,79 @@ const regionLabels = Array.from(largestPiecePerRegion.values())
     ];
   });
 
+// US state postal abbreviations, shown centered in each state once state borders are visible (see
+// STATE_BORDER_MIN_ZOOM in globe-entry.js) — the plain "two letters, dead center" style Apple Maps
+// uses, not the curved full-name labels above (which stay off, see SHOW_REGION_LABELS). Every
+// state shows together at the same threshold rather than a per-state reveal zoom like the curved
+// labels use, matching how Apple Maps reveals them.
+//
+// Not derived from the source data — the admin1 layer was filtered down to just name/admin at
+// mapshaper time (see the admin1-provinces.json comment above), so there's no postal-code field to
+// read; a plain lookup table for the 50 states + DC is simpler than regenerating that data file
+// just to carry one more property.
+const US_STATE_ABBREVIATIONS = {
+  Alabama: 'AL',
+  Alaska: 'AK',
+  Arizona: 'AZ',
+  Arkansas: 'AR',
+  California: 'CA',
+  Colorado: 'CO',
+  Connecticut: 'CT',
+  Delaware: 'DE',
+  'District of Columbia': 'DC',
+  Florida: 'FL',
+  Georgia: 'GA',
+  Hawaii: 'HI',
+  Idaho: 'ID',
+  Illinois: 'IL',
+  Indiana: 'IN',
+  Iowa: 'IA',
+  Kansas: 'KS',
+  Kentucky: 'KY',
+  Louisiana: 'LA',
+  Maine: 'ME',
+  Maryland: 'MD',
+  Massachusetts: 'MA',
+  Michigan: 'MI',
+  Minnesota: 'MN',
+  Mississippi: 'MS',
+  Missouri: 'MO',
+  Montana: 'MT',
+  Nebraska: 'NE',
+  Nevada: 'NV',
+  'New Hampshire': 'NH',
+  'New Jersey': 'NJ',
+  'New Mexico': 'NM',
+  'New York': 'NY',
+  'North Carolina': 'NC',
+  'North Dakota': 'ND',
+  Ohio: 'OH',
+  Oklahoma: 'OK',
+  Oregon: 'OR',
+  Pennsylvania: 'PA',
+  'Rhode Island': 'RI',
+  'South Carolina': 'SC',
+  'South Dakota': 'SD',
+  Tennessee: 'TN',
+  Texas: 'TX',
+  Utah: 'UT',
+  Vermont: 'VT',
+  Virginia: 'VA',
+  Washington: 'WA',
+  'West Virginia': 'WV',
+  Wisconsin: 'WI',
+  Wyoming: 'WY',
+};
+const usStateLabels = Array.from(largestPiecePerRegion.values())
+  // DC isn't a state, and its centroid label reads as clutter squeezed in among Maryland/Virginia
+  // rather than useful information at any zoom this map reaches.
+  .filter(({ feature: f, name }) => f.properties.admin === 'United States of America' && name !== 'District of Columbia')
+  .map(({ name, centroid }) => [
+    US_STATE_ABBREVIATIONS[name] || name,
+    Math.round(centroid[0] * 1e5) / 1e5,
+    Math.round(centroid[1] * 1e5) / 1e5,
+  ]);
+
 // City/town labels, shown at deep zoom. Source: GeoNames' cities1000 dump (every populated place
 // with population >= 1,000 - https://download.geonames.org/export/dump/cities1000.zip), reduced
 // to [name, lon, lat, population] tuples in scripts/data/cities.json - no polygon geometry to
@@ -279,7 +352,7 @@ const regionLabels = Array.from(largestPiecePerRegion.values())
 // log-population spread wants. These constants keep every population tier reachable within
 // that range; MAX_ZOOM going higher than this is about the globe surface feeling deep to
 // explore, not a requirement for any city tier to ever show up.
-const CITY_BASE_MIN_ZOOM = 5; // cities start at the same zoom as state/province borders
+const CITY_BASE_MIN_ZOOM = 10; // cities start once land/country-border detail is fully resolved
 const CITY_LOG_POP_MAX = 7.4; // roughly Tokyo-scale (~37M) - the top of the log-population range
 const CITY_ZOOM_PER_LOG_POP = 1.3;
 function minZoomForPopulation(population) {
@@ -367,6 +440,7 @@ window.BORDER_DETAIL_BBOXES = ${embedAsJson(borderDetailBboxes)};
 window.REGION_BORDER_ARCS = ${embedAsJson(regionBorderArcs)};
 window.REGION_BORDER_BBOXES = ${embedAsJson(regionBorderBboxes)};
 window.REGION_LABELS = ${embedAsJson(regionLabels)};
+window.US_STATE_LABELS = ${embedAsJson(usStateLabels)};
 window.CITIES = ${embedAsJson(cities)};
 window.CITY_CELLS = ${embedAsJson(cityCellsObj)};
 window.CITY_CELL_SIZE_DEG = ${embedAsJson(CITY_CELL_SIZE_DEG)};

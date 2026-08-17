@@ -37,9 +37,11 @@ export function visibilityScore(minZoom, zoom) {
 // CITY_FONT_MIN_ZOOM mirrors CITY_BASE_MIN_ZOOM in selection.js/build-globe-html.mjs — kept as its
 // own copy since it's tuning a visual detail (where text growth starts) that doesn't need to move
 // in lockstep with the selection algorithm's own eligibility gate, even though they happen to
-// start at the same zoom today.
-const CITY_FONT_MIN_ZOOM = 2.8;
-const CITY_FONT_MAX_ZOOM = 8;
+// start at the same zoom today. Same ~5-unit span as before, just shifted to start where cities
+// now actually become eligible — left any further behind and every label would already be at max
+// size the instant it appears, with no growth effect left to see.
+const CITY_FONT_MIN_ZOOM = 10;
+const CITY_FONT_MAX_ZOOM = 15;
 const CITY_FONT_MIN_PX = 10;
 const CITY_FONT_MAX_PX = 13;
 
