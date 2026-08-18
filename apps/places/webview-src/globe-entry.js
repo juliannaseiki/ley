@@ -4,10 +4,11 @@ import { selectCityLabels, CITY_RETAIN_HYSTERESIS, CITY_BASE_MIN_ZOOM } from './
 import { createLabelStateStore, applySelection, dropStaleByZoom, advance as advanceLabelState } from './city-labels/stateMachine.js';
 import { drawCityLabels, cityLabelFont } from './city-labels/render.js';
 
-// LAND_GEOJSON, BORDER_GEOJSON, LAND_DETAIL_PIECES, LAND_DETAIL_BBOXES, BORDER_DETAIL_ARCS,
-// BORDER_DETAIL_BBOXES, REGION_BORDER_ARCS, REGION_BORDER_BBOXES, REGION_LABELS,
-// US_STATE_LABELS, CITIES, and THEME are injected as globals by the HTML wrapper at build time.
-/* global LAND_GEOJSON, BORDER_GEOJSON, LAND_DETAIL_PIECES, LAND_DETAIL_BBOXES, BORDER_DETAIL_ARCS, BORDER_DETAIL_BBOXES, REGION_BORDER_ARCS, REGION_BORDER_BBOXES, REGION_LABELS, US_STATE_LABELS, CITIES, THEME */
+// LAND_GEOJSON, BORDER_GEOJSON, LAND_DETAIL_PIECES, LAND_DETAIL_BBOXES, TINY_ISLAND_PIECES,
+// TINY_ISLAND_BBOXES, BORDER_DETAIL_ARCS, BORDER_DETAIL_BBOXES, REGION_BORDER_ARCS,
+// REGION_BORDER_BBOXES, REGION_LABELS, US_STATE_LABELS, CITIES, and THEME are injected as globals
+// by the HTML wrapper at build time.
+/* global LAND_GEOJSON, BORDER_GEOJSON, LAND_DETAIL_PIECES, LAND_DETAIL_BBOXES, TINY_ISLAND_PIECES, TINY_ISLAND_BBOXES, BORDER_DETAIL_ARCS, BORDER_DETAIL_BBOXES, REGION_BORDER_ARCS, REGION_BORDER_BBOXES, REGION_LABELS, US_STATE_LABELS, CITIES, THEME */
 
 // Temporary flag — region labels are getting a hand-drawn redesign, so they're switched off here
 // rather than removed: the curve-fitting and recompute logic underneath is all still intact and
@@ -135,17 +136,23 @@ const PINCH_ZOOM_POWER = 1.8;
 // point count the border layers don't pay).
 const LAND_DETAIL_FADE_START = 10;
 const LAND_DETAIL_FADE_END = 10.8;
-// State/province borders are a hard cutoff, not a fade — they simply don't exist on screen at all
-// below this zoom, and appear at full opacity once past it.
-const STATE_BORDER_MIN_ZOOM = 5;
-// Country-border detail intentionally finishes fading in by the same zoom state borders appear at
-// (not pushed out deep like land's, above) — state border data has always been full-fidelity with
-// no coarse tier of its own, so if country borders were still coarse (or mid-fade) by the time
-// state borders switch on, the country outline would visibly read as cruder than the state lines
-// sitting right next to it. Tied to STATE_BORDER_MIN_ZOOM by construction, not just matched by
-// coincidence, so the two can't drift apart again if either threshold changes later.
+// State/province borders finish fading in by this zoom — not pushed out deep like land's, above.
+const STATE_BORDER_MIN_ZOOM = 3;
+// State borders, their abbreviation labels, and country-border detail all fade in together over
+// this same window, reaching full opacity together at STATE_BORDER_MIN_ZOOM — a popped-in state
+// line next to a still-fading (or still-coarse) country border would visibly read as mismatched
+// fidelity right next to each other, and an instant on/off snap for state borders/labels read as a
+// glitch rather than a deliberate reveal (both tried and rejected — see BORDER_DETAIL_FADE_START's
+// use at each of those draw sites for the actual alpha value shared by all three). Tied to
+// STATE_BORDER_MIN_ZOOM by construction, not just matched by coincidence, so the three can't drift
+// apart again if the threshold changes later.
 const BORDER_DETAIL_FADE_END = STATE_BORDER_MIN_ZOOM;
 const BORDER_DETAIL_FADE_START = STATE_BORDER_MIN_ZOOM - 0.8;
+// Tiny islands (see TINY_ISLAND_MAX_DEG in build-globe-html.mjs — every uninhabited rock/atoll
+// -explode split into its own piece) are held out of both the coarse and detail land tiers
+// entirely below this zoom; at a zoomed-out view they read as flecks of dirt scattered across the
+// ocean rather than actual geography. A hard cutoff, not a fade, same reasoning as state borders.
+const TINY_ISLAND_MIN_ZOOM = 10;
 // The city-label selection algorithm's own tuning (CITY_MAX_LABELS, CITY_GRID_COLS/ROWS) now
 // lives entirely in city-labels/selection.js — this file only imports the two constants that also
 // affect drawing here: CITY_BASE_MIN_ZOOM (the fade-eligibility gate below) and
@@ -326,7 +333,8 @@ function renderInner() {
   // fades in on top once zoomed in: LAND_GEOJSON is a coarse (~2% simplified) always-on base so
   // the resting/at-rest view never pays for more resolution than it needs, LAND_DETAIL_PIECES is
   // the same source simplified far less, revealing smaller islands and more accurate coastlines
-  // the coarse tier smooths away or drops entirely.
+  // the coarse tier smooths away or drops entirely — except the very smallest islands, which are
+  // held out of both tiers and shown separately below (see TINY_ISLAND_MIN_ZOOM).
   //
   // The coarse tier only actually needs to draw while the detail tier is transparent or fading
   // in — once detail reaches full opacity it completely covers the coarse shape underneath, so
@@ -355,11 +363,31 @@ function renderInner() {
     ctx.globalAlpha = 1;
   }
 
+  // Tiny islands — held out of both tiers above entirely below TINY_ISLAND_MIN_ZOOM (see its
+  // comment). Same draw style as the detail tier (smoothed, same stroke) since it's really just
+  // that tier's own leftover pieces, revealed on their own deeper threshold rather than dropped.
+  if (zoom >= TINY_ISLAND_MIN_ZOOM) {
+    ctx.beginPath();
+    for (let i = 0; i < TINY_ISLAND_PIECES.length; i++) {
+      if (cullByBbox(TINY_ISLAND_BBOXES[i], capRadiusDeg)) {
+        smoothPath({ type: 'Polygon', coordinates: TINY_ISLAND_PIECES[i] });
+      }
+    }
+    smoothPathContext.flush();
+    ctx.lineWidth = 0.5;
+    ctx.strokeStyle = THEME.landStroke;
+    ctx.stroke();
+  }
+
   // State/province borders for every country, drawn under country borders (so the country
-  // outline reads as the more prominent line). A hard cutoff rather than a fade — they simply
-  // don't exist on screen at all until STATE_BORDER_MIN_ZOOM, at full zoom-out this level of
-  // detail is just noise, the same reasoning as the line labels.
-  if (zoom >= STATE_BORDER_MIN_ZOOM) {
+  // outline reads as the more prominent line). Fades in over BORDER_DETAIL_FADE_START..END, the
+  // same window (and the same computed alpha, borderDetailAlpha below) shared with the country
+  // border detail tier and the US state abbreviation labels — see the comment on
+  // BORDER_DETAIL_FADE_START above for why all three move together rather than each fading (or
+  // snapping) on its own schedule. At full zoom-out this level of detail is just noise, the same
+  // reasoning as the line labels.
+  const borderDetailAlpha = clamp((zoom - BORDER_DETAIL_FADE_START) / (BORDER_DETAIL_FADE_END - BORDER_DETAIL_FADE_START), 0, 1);
+  if (borderDetailAlpha > 0) {
     ctx.beginPath();
     for (let i = 0; i < REGION_BORDER_ARCS.length; i++) {
       if (cullByBbox(REGION_BORDER_BBOXES[i], capRadiusDeg)) {
@@ -371,7 +399,9 @@ function renderInner() {
     }
     ctx.lineWidth = 0.4;
     ctx.strokeStyle = THEME.regionBorder;
+    ctx.globalAlpha = borderDetailAlpha;
     ctx.stroke();
+    ctx.globalAlpha = 1;
   }
 
   // Region name labels — the recompute (layoutCurvedLabel/recomputeRegionLabels) only runs at
@@ -414,10 +444,10 @@ function renderInner() {
     ctx.textBaseline = 'alphabetic';
   }
 
-  // Country borders — coarse tier always-on, finer tier fades in on top once zoomed in, same
-  // two-tier idea as the land/coastline detail above (including skipping the coarse tier once
-  // the detail tier is fully opaque and covering it).
-  const borderDetailAlpha = clamp((zoom - BORDER_DETAIL_FADE_START) / (BORDER_DETAIL_FADE_END - BORDER_DETAIL_FADE_START), 0, 1);
+  // Country borders — coarse tier always-on, finer tier fades in on top once zoomed in (same
+  // borderDetailAlpha computed above, alongside state borders), same two-tier idea as the
+  // land/coastline detail above (including skipping the coarse tier once the detail tier is fully
+  // opaque and covering it).
   if (borderDetailAlpha < 1) {
     ctx.beginPath();
     path(BORDER_GEOJSON);
@@ -440,15 +470,16 @@ function renderInner() {
     ctx.globalAlpha = 1;
   }
 
-  // US state abbreviations — same reveal zoom as the state borders themselves (see
-  // STATE_BORDER_MIN_ZOOM above); every state's label appears at once rather than a per-state
-  // reveal, matching Apple Maps rather than the population/area-scaled reveal city and (disabled)
+  // US state abbreviations — same fade window as the state borders themselves (borderDetailAlpha,
+  // computed above); every state's label fades in together rather than a per-state reveal,
+  // matching Apple Maps rather than the population/area-scaled reveal city and (disabled)
   // region-name labels use.
-  if (zoom >= STATE_BORDER_MIN_ZOOM) {
+  if (borderDetailAlpha > 0) {
     ctx.font = US_STATE_LABEL_FONT;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.lineJoin = 'round';
+    ctx.globalAlpha = borderDetailAlpha;
     for (const [abbr, lon, lat] of US_STATE_LABELS) {
       if (!isFrontFacing([lon, lat])) continue;
       const p = projection([lon, lat]);
@@ -459,6 +490,7 @@ function renderInner() {
       ctx.fillStyle = THEME.cityLabel;
       ctx.fillText(abbr, p[0], p[1]);
     }
+    ctx.globalAlpha = 1;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'alphabetic';
   }
