@@ -12,7 +12,7 @@ export function HomeScreen() {
     <View style={styles.container}>
       <SafeAreaView style={styles.headerSafe} edges={['top']}>
         <View style={styles.header}>
-          <Text style={styles.wordmark}>Places</Text>
+          <Text style={styles.wordmark}>ley</Text>
           <Pressable onPress={() => signOut()} hitSlop={12}>
             <Text style={styles.signOut}>Log out</Text>
           </Pressable>

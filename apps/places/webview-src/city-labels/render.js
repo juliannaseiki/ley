@@ -6,7 +6,7 @@
 import { fontSizeForZoom } from './scoring.js';
 import { opacityFor } from './stateMachine.js';
 
-const CITY_LABEL_FONT_STYLE = "italic 500";
+const CITY_LABEL_FONT_STYLE = "500";
 const CITY_LABEL_FONT_FAMILY = "Georgia, 'Times New Roman', serif";
 const CITY_DOT_RADIUS = 1.6;
 const CITY_LABEL_OFFSET_X = 3;

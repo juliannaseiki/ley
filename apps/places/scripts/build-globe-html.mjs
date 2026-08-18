@@ -126,17 +126,56 @@ const { landGeoJson: landDetailGeoJson, borderGeoJson: borderDetailGeoJson } = l
 // Split the detail tiers' single merged geometries into individually-cullable pieces, each paired
 // with its own bbox — see bboxOf above and cullByBbox in webview-src/globe-entry.js. Only the
 // detail tiers need this: the coarse tiers stay always-on but are only ever drawn below
-// REGION_BORDER_FADE_END (zoom 2.2, see renderInner), where the whole front hemisphere still fits
-// on screen and there's nothing to cull anyway. landDetailGeoJson.geometry is one MultiPolygon
-// (merge() unions every country into a single shape) — each polygon in it becomes its own piece.
+// LAND_DETAIL_FADE_END (see renderInner), where the whole front hemisphere still fits on screen
+// and there's nothing to cull anyway. landDetailGeoJson.geometry is one MultiPolygon (merge()
+// unions every country into a single shape) — each polygon in it becomes its own piece.
 // borderDetailGeoJson is a single MultiLineString from mesh() — each arc becomes its own piece.
 function polygonPiecesOf(geometry) {
   if (!geometry) return { pieces: [], bboxes: [] };
   const polygons = geometry.type === 'MultiPolygon' ? geometry.coordinates : [geometry.coordinates];
   return { pieces: polygons, bboxes: polygons.map(bboxOf) };
 }
-const { pieces: landDetailPieces, bboxes: landDetailBboxes } = polygonPiecesOf(landDetailGeoJson.geometry);
+const { pieces: landDetailPiecesAll, bboxes: landDetailBboxesAll } = polygonPiecesOf(landDetailGeoJson.geometry);
 const borderDetailArcs = borderDetailGeoJson.coordinates;
+
+// -explode (see loadCountries above) means every disjoint landmass in the source — down to the
+// smallest uninhabited rock — becomes its own piece here, not just recognized countries/islands.
+// At a zoomed-out view those thousands of stray specks read as flecks of dirt scattered across the
+// ocean rather than actual geography, so anything under this size is held back from both the
+// coarse and detail tiers entirely and only revealed once zoomed in deep enough (TINY_ISLAND_MIN_ZOOM)
+// to read as an actual place rather than a stray mark. Calibrated against the real computed size
+// distribution (measured in each piece's own longest bbox dimension, degrees): the median piece
+// across the whole coarse dataset is ~0.11°, and 0.75° sits well clear of every genuinely tiny
+// atoll/reef while still keeping every recognizable island nation and archipelago (Fiji's main
+// islands at 1.4°, the Bahamas' scattered chain at 0.8°, Jamaica at 1.8°) on screen throughout.
+// Some real small countries (Singapore, Bahrain, Malta, Barbados) fall under this too — an
+// inherent tradeoff of a pure size cutoff, not a curated exceptions list, but consistent with how
+// imperceptibly small they'd read at a zoomed-out view regardless.
+const TINY_ISLAND_MAX_DEG = 0.75;
+function isTinyBbox(bbox) {
+  return bbox !== null && Math.max(bbox[2] - bbox[0], bbox[3] - bbox[1]) < TINY_ISLAND_MAX_DEG;
+}
+const landDetailPieces = [];
+const landDetailBboxes = [];
+const tinyIslandPieces = [];
+const tinyIslandBboxes = [];
+landDetailPiecesAll.forEach((piece, i) => {
+  const bbox = landDetailBboxesAll[i];
+  if (isTinyBbox(bbox)) {
+    tinyIslandPieces.push(piece);
+    tinyIslandBboxes.push(bbox);
+  } else {
+    landDetailPieces.push(piece);
+    landDetailBboxes.push(bbox);
+  }
+});
+// The coarse tier is normally one single always-on Feature (drawn with one path() call, no
+// per-piece culling — see the comment above), but tiny islands need to be excluded from it too,
+// so it has to go through the same per-piece split as the detail tier just to filter them out,
+// then get re-merged into one Feature again from what's left.
+const { pieces: landCoarsePiecesAll, bboxes: landCoarseBboxesAll } = polygonPiecesOf(landGeoJson.geometry);
+const landCoarseMainPieces = landCoarsePiecesAll.filter((_, i) => !isTinyBbox(landCoarseBboxesAll[i]));
+landGeoJson.geometry = { type: 'MultiPolygon', coordinates: landCoarseMainPieces };
 const borderDetailBboxes = borderDetailArcs.map(bboxOf);
 
 // State/province-level boundaries for every country, not just the US. world-atlas/us-atlas only
@@ -157,10 +196,15 @@ const regionsTopology = JSON.parse(
   fs.readFileSync(path.join(root, 'scripts/data/admin1-provinces.json'), 'utf8')
 );
 const regionsObject = regionsTopology.objects.ne_10m_admin_1_states_provinces;
+// US-only for now — every other country's state/province borders are in the source data (global
+// coverage) but held back entirely rather than drawn, same "only show what's deliberately been
+// designed for" reasoning as everything else built out one country at a time in this app so far.
+const isUSState = (f) => f.properties.admin === 'United States of America';
 const regionBorderGeoJson = mesh(
   regionsTopology,
   regionsObject,
-  (a, b) => a.properties.name + '|' + a.properties.admin !== b.properties.name + '|' + b.properties.admin
+  (a, b) =>
+    isUSState(a) && isUSState(b) && a.properties.name + '|' + a.properties.admin !== b.properties.name + '|' + b.properties.admin
 );
 // Same per-arc bbox split as the country border mesh above — this is the layer the "8,535
 // exploded features add up" comment is about, so it's the one that benefits most from being able
@@ -435,6 +479,8 @@ window.LAND_GEOJSON = ${embedAsJson(landGeoJson)};
 window.BORDER_GEOJSON = ${embedAsJson(borderGeoJson)};
 window.LAND_DETAIL_PIECES = ${embedAsJson(landDetailPieces)};
 window.LAND_DETAIL_BBOXES = ${embedAsJson(landDetailBboxes)};
+window.TINY_ISLAND_PIECES = ${embedAsJson(tinyIslandPieces)};
+window.TINY_ISLAND_BBOXES = ${embedAsJson(tinyIslandBboxes)};
 window.BORDER_DETAIL_ARCS = ${embedAsJson(borderDetailArcs)};
 window.BORDER_DETAIL_BBOXES = ${embedAsJson(borderDetailBboxes)};
 window.REGION_BORDER_ARCS = ${embedAsJson(regionBorderArcs)};
