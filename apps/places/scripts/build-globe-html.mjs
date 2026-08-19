@@ -426,8 +426,9 @@ cities.forEach(([, lon, lat], index) => {
 const cityCellsObj = Object.fromEntries(cityCells);
 
 const theme = {
-  oceanLight: '#FFFFFF',
-  oceanDeep: '#FFFFFF',
+  oceanLight: '#fbfdfe',
+  oceanDeep: '#fbfdfe',
+  land: '#FFFFFF',
   landStroke: '#A3A3A3',
   countryBorder: '#A3A3A3',
   regionBorder: '#A3A3A3',
