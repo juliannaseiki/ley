@@ -248,7 +248,7 @@ const REGION_LABEL_SAMPLE_STEPS = 240;
 // as part of the same map-label family rather than a third, competing color. Same white-halo
 // technique as city labels (see city-labels/render.js) for legibility crossing over state/country
 // border lines and coastlines underneath.
-const US_STATE_LABEL_FONT = '700 11px -apple-system, BlinkMacSystemFont, system-ui, sans-serif';
+const US_STATE_LABEL_FONT = '700 9px -apple-system, BlinkMacSystemFont, system-ui, sans-serif';
 const US_STATE_LABEL_OUTLINE_COLOR = '#FFFFFF';
 const US_STATE_LABEL_OUTLINE_WIDTH = 3;
 let regionLabels = []; // [{ name, lon, lat, minZoom, glyphs: [{lon, lat, char, width}], left, right, top, bottom, fadeStartAt }]

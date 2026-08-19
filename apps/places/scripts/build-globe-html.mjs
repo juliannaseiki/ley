@@ -396,7 +396,7 @@ const usStateLabels = Array.from(largestPiecePerRegion.values())
 // log-population spread wants. These constants keep every population tier reachable within
 // that range; MAX_ZOOM going higher than this is about the globe surface feeling deep to
 // explore, not a requirement for any city tier to ever show up.
-const CITY_BASE_MIN_ZOOM = 10; // cities start once land/country-border detail is fully resolved
+const CITY_BASE_MIN_ZOOM = 3; // cities start at the same zoom as state/province borders
 const CITY_LOG_POP_MAX = 7.4; // roughly Tokyo-scale (~37M) - the top of the log-population range
 const CITY_ZOOM_PER_LOG_POP = 1.3;
 function minZoomForPopulation(population) {
@@ -428,10 +428,10 @@ const cityCellsObj = Object.fromEntries(cityCells);
 const theme = {
   oceanLight: '#FFFFFF',
   oceanDeep: '#FFFFFF',
-  landStroke: '#767676',
-  countryBorder: '#767676',
-  regionBorder: '#767676',
-  globeOutline: '#767676',
+  landStroke: '#A3A3A3',
+  countryBorder: '#A3A3A3',
+  regionBorder: '#A3A3A3',
+  globeOutline: '#A3A3A3',
   cityDot: '#8FA396',
   cityLabel: '#5B655F',
   regionLabel: '#7A6A4F',
