@@ -1,12 +1,20 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Globe } from '../components/Globe';
+import { PlaceDetailPanel } from '../components/PlaceDetailPanel';
 import { useAuth } from '@ley/auth';
 import { colors, fonts, spacing } from '@ley/ui';
 
 export function HomeScreen() {
   const { signOut } = useAuth();
+  const [panelVisible, setPanelVisible] = useState(false);
+  const [tappedLocation, setTappedLocation] = useState<{ lat: number; lon: number } | null>(null);
+
+  const handleTapLocation = (lat: number, lon: number) => {
+    setTappedLocation({ lat, lon });
+    setPanelVisible(true);
+  };
 
   return (
     <View style={styles.container}>
@@ -19,7 +27,13 @@ export function HomeScreen() {
         </View>
       </SafeAreaView>
 
-      <Globe />
+      <Globe onTapLocation={handleTapLocation} />
+
+      <PlaceDetailPanel
+        visible={panelVisible}
+        onClose={() => setPanelVisible(false)}
+        location={tappedLocation}
+      />
     </View>
   );
 }

@@ -117,7 +117,7 @@ const DPR_CAP = 2;
 let dpr = Math.min(DPR_CAP, Math.max(1, window.devicePixelRatio || 1));
 
 let rotation = [10, -12]; // [lambda, phi], degrees
-let zoom = 1;
+let zoom = 2;
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 100;
 // Exponent applied to the raw pinch finger-distance ratio (see onPointerMove) — tuned so a single
@@ -328,10 +328,11 @@ function renderInner() {
   ctx.fillStyle = oceanGradient;
   ctx.fill();
 
-  // Land — outline only, no fill: coastlines read against the plain ocean/background rather than
-  // a filled landmass color, for the most minimal version of the map. Finer coastline detail
-  // fades in on top once zoomed in: LAND_GEOJSON is a coarse (~2% simplified) always-on base so
-  // the resting/at-rest view never pays for more resolution than it needs, LAND_DETAIL_PIECES is
+  // Land — flat white fill (THEME.land), separating it from the now-tinted ocean rather than
+  // leaving it unfilled to just show ocean color through the gap, for the most minimal version of
+  // the map. Finer coastline detail fades in on top once zoomed in: LAND_GEOJSON is a coarse (~2%
+  // simplified) always-on base so the resting/at-rest view never pays for more resolution than it
+  // needs, LAND_DETAIL_PIECES is
   // the same source simplified far less, revealing smaller islands and more accurate coastlines
   // the coarse tier smooths away or drops entirely — except the very smallest islands, which are
   // held out of both tiers and shown separately below (see TINY_ISLAND_MIN_ZOOM).
@@ -344,6 +345,8 @@ function renderInner() {
   if (landDetailAlpha < 1) {
     ctx.beginPath();
     path(LAND_GEOJSON);
+    ctx.fillStyle = THEME.land;
+    ctx.fill();
     ctx.lineWidth = 0.5;
     ctx.strokeStyle = THEME.landStroke;
     ctx.stroke();
@@ -357,6 +360,8 @@ function renderInner() {
       }
     }
     smoothPathContext.flush();
+    ctx.fillStyle = THEME.land;
+    ctx.fill();
     ctx.lineWidth = 0.5;
     ctx.strokeStyle = THEME.landStroke;
     ctx.stroke();
@@ -364,8 +369,9 @@ function renderInner() {
   }
 
   // Tiny islands — held out of both tiers above entirely below TINY_ISLAND_MIN_ZOOM (see its
-  // comment). Same draw style as the detail tier (smoothed, same stroke) since it's really just
-  // that tier's own leftover pieces, revealed on their own deeper threshold rather than dropped.
+  // comment). Same draw style as the detail tier (smoothed, filled, same stroke) since it's
+  // really just that tier's own leftover pieces, revealed on their own deeper threshold rather
+  // than dropped.
   if (zoom >= TINY_ISLAND_MIN_ZOOM) {
     ctx.beginPath();
     for (let i = 0; i < TINY_ISLAND_PIECES.length; i++) {
@@ -374,6 +380,8 @@ function renderInner() {
       }
     }
     smoothPathContext.flush();
+    ctx.fillStyle = THEME.land;
+    ctx.fill();
     ctx.lineWidth = 0.5;
     ctx.strokeStyle = THEME.landStroke;
     ctx.stroke();
