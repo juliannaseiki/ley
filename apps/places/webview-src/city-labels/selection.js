@@ -29,7 +29,7 @@ export const CITY_RETAIN_HYSTERESIS = 0.4;
 // showing at all. Must stay numerically in sync with CITY_BASE_MIN_ZOOM in build-globe-html.mjs
 // (which derives every city's own minZoom from population) — same cross-file constant this
 // codebase already keeps in a couple of places, not a new kind of duplication.
-export const CITY_BASE_MIN_ZOOM = 10;
+export const CITY_BASE_MIN_ZOOM = 3;
 // Fixed to lon/lat, not screen position — see the comment above the fallback loop below for why
 // the fallback winner specifically needs a rotation-stable cell, unlike the screen-fixed
 // CITY_GRID_COLS/ROWS used for breadth fairness. Deliberately its own constant rather than reusing
