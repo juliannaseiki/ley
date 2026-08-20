@@ -13,6 +13,7 @@ import {
   View,
 } from 'react-native';
 import { colors, fonts, radii, spacing, useDebouncedValue } from '@ley/ui';
+import { supabase, useAuth } from '@ley/auth';
 import { searchPlaces, PlaceSearchResult } from '../lib/foursquarePlaces';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
@@ -30,14 +31,27 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+type SavedPlace = {
+  id: string;
+  name: string;
+  category: string | null;
+  formatted_address: string | null;
+  latitude: number;
+  longitude: number;
+};
+
+const SAVED_PLACE_COLUMNS = 'id, name, category, formatted_address, latitude, longitude';
+
 type Props = {
   visible: boolean;
   title: string;
   location: { lat: number; lon: number } | null;
   addingPlace: boolean;
+  onPlaceSaved: () => void;
 };
 
-export function PlaceDetailPanel({ visible, title, location, addingPlace }: Props) {
+export function PlaceDetailPanel({ visible, title, location, addingPlace, onPlaceSaved }: Props) {
+  const { session } = useAuth();
   const [translateY] = useState(() => new Animated.Value(SCREEN_HEIGHT));
   const [expanded, setExpanded] = useState(true);
   const dragStartY = useRef(0);
@@ -54,7 +68,13 @@ export function PlaceDetailPanel({ visible, title, location, addingPlace }: Prop
   const [selectedPlace, setSelectedPlace] = useState<PlaceSearchResult | null>(null);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const debouncedQuery = useDebouncedValue(searchQuery, SEARCH_DEBOUNCE_MS);
+
+  const [savedPlaces, setSavedPlaces] = useState<SavedPlace[]>([]);
+  const [savedPlacesLoading, setSavedPlacesLoading] = useState(false);
+  const [savedPlacesError, setSavedPlacesError] = useState<string | null>(null);
 
   const peekTranslateY = (height: number) => Math.max(0, height - PANEL_PEEK_HEIGHT);
 
@@ -115,6 +135,33 @@ export function PlaceDetailPanel({ visible, title, location, addingPlace }: Prop
     };
   }, [trimmedQuery, queryTooShort, addingPlace, selectedPlace]);
 
+  const userId = session?.user?.id;
+
+  useEffect(() => {
+    if (!userId) return;
+    let cancelled = false;
+    // Same standard data-fetching pattern as the search effect above.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSavedPlacesLoading(true);
+    setSavedPlacesError(null);
+    supabase
+      .from('saved_places')
+      .select(SAVED_PLACE_COLUMNS)
+      .order('created_at', { ascending: false })
+      .then(({ data, error }) => {
+        if (cancelled) return;
+        if (error) {
+          setSavedPlacesError(error.message);
+        } else {
+          setSavedPlaces(data ?? []);
+        }
+        setSavedPlacesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
+
   // dragStartY/panelHeightRef are only ever read/written inside these handlers, never during
   // render — the rule can't see that the closure is deferred, hence the suppression.
   // eslint-disable-next-line react-hooks/refs
@@ -167,8 +214,32 @@ export function PlaceDetailPanel({ visible, title, location, addingPlace }: Prop
     setSearchResults([]);
   };
 
-  const handleAddPlace = () => {
-    // Stub — saving to the database is wired up separately.
+  const handleAddPlace = async () => {
+    if (!selectedPlace || !session?.user || saving) return;
+    setSaving(true);
+    setSaveError(null);
+    const categories = selectedPlace.raw.categories as { name?: string }[] | undefined;
+    const { data, error } = await supabase
+      .from('saved_places')
+      .insert({
+        user_id: session.user.id,
+        fsq_place_id: selectedPlace.id || null,
+        name: selectedPlace.name,
+        category: categories?.[0]?.name ?? null,
+        latitude: selectedPlace.location?.lat,
+        longitude: selectedPlace.location?.lon,
+        formatted_address: selectedPlace.formattedAddress ?? null,
+        raw_metadata: selectedPlace.raw,
+      })
+      .select(SAVED_PLACE_COLUMNS)
+      .single();
+    setSaving(false);
+    if (error) {
+      setSaveError(error.message);
+      return;
+    }
+    if (data) setSavedPlaces((prev) => [data, ...prev]);
+    onPlaceSaved();
   };
 
   return (
@@ -222,17 +293,22 @@ export function PlaceDetailPanel({ visible, title, location, addingPlace }: Prop
               <>
                 <Pressable
                   onPress={handleAddPlace}
+                  disabled={saving}
                   style={({ pressed }) => [
                     styles.mapsButton,
                     styles.addPlaceButton,
                     pressed && styles.mapsButtonPressed,
+                    saving && styles.addPlaceButtonDisabled,
                   ]}
                 >
-                  <Text style={styles.mapsButtonLabel}>Add place</Text>
+                  {saving ? (
+                    <ActivityIndicator color={colors.inkSoft} />
+                  ) : (
+                    <Text style={styles.mapsButtonLabel}>Add place</Text>
+                  )}
                 </Pressable>
 
-                <Text style={styles.metadataHeading}>Raw API response</Text>
-                <Text style={styles.metadata}>{JSON.stringify(selectedPlace.raw, null, 2)}</Text>
+                {saveError ? <Text style={styles.searchError}>{saveError}</Text> : null}
               </>
             ) : null}
           </>
@@ -264,7 +340,26 @@ export function PlaceDetailPanel({ visible, title, location, addingPlace }: Prop
               style={styles.notesInput}
             />
           </>
-        ) : null}
+        ) : savedPlacesLoading ? (
+          <ActivityIndicator color={colors.inkSoft} style={styles.searchStatus} />
+        ) : savedPlacesError ? (
+          <Text style={styles.searchError}>{savedPlacesError}</Text>
+        ) : savedPlaces.length > 0 ? (
+          <View style={styles.resultsList}>
+            {savedPlaces.map((place) => (
+              <View key={place.id} style={styles.resultRow}>
+                <Text style={styles.resultName}>{place.name}</Text>
+                {place.category || place.formatted_address ? (
+                  <Text style={styles.resultAddress}>
+                    {[place.category, place.formatted_address].filter(Boolean).join(' · ')}
+                  </Text>
+                ) : null}
+              </View>
+            ))}
+          </View>
+        ) : (
+          <Text style={styles.emptyState}>No saved places yet — tap the + button to add one.</Text>
+        )}
       </ScrollView>
     </Animated.View>
   );
@@ -276,7 +371,7 @@ const styles = StyleSheet.create({
     left: 15,
     right: 15,
     bottom: 0,
-    maxHeight: '58%',
+    height: '58%',
     backgroundColor: colors.white,
     borderWidth: 1,
     borderColor: colors.hairline,
@@ -382,24 +477,17 @@ const styles = StyleSheet.create({
     color: colors.inkSoft,
     marginTop: 2,
   },
+  emptyState: {
+    fontFamily: fonts.body,
+    fontSize: 14,
+    color: colors.inkSoft,
+    marginTop: spacing.md,
+    textAlign: 'center',
+  },
   addPlaceButton: {
     marginTop: spacing.md,
   },
-  metadataHeading: {
-    fontFamily: fonts.bodyMedium,
-    fontSize: 13,
-    color: colors.inkSoft,
-    marginTop: spacing.lg,
-    marginBottom: spacing.xs,
-  },
-  metadata: {
-    fontFamily: fonts.body,
-    fontSize: 12,
-    lineHeight: 17,
-    color: colors.inkSoft,
-    backgroundColor: colors.panelBackground,
-    borderRadius: radii.md,
-    padding: spacing.sm,
-    marginBottom: spacing.lg,
+  addPlaceButtonDisabled: {
+    opacity: 0.6,
   },
 });
