@@ -1,22 +1,27 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Animated,
   Dimensions,
   Linking,
   PanResponder,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from 'react-native';
-import { colors, fonts, radii, spacing } from '@ley/ui';
+import { colors, fonts, radii, spacing, useDebouncedValue } from '@ley/ui';
+import { searchPlaces, PlaceSearchResult } from '../lib/foursquarePlaces';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 export const PANEL_PEEK_HEIGHT = SCREEN_HEIGHT / 3;
 const SNAP_DRAG_THRESHOLD = 60;
 const SNAP_VELOCITY_THRESHOLD = 0.5;
 const SPRING_CONFIG = { damping: 18, mass: 0.9, stiffness: 160, useNativeDriver: true } as const;
+const SEARCH_DEBOUNCE_MS = 400;
+const MIN_QUERY_LENGTH = 2;
 
 const GALLERY_PLACEHOLDERS = [colors.skyBlue, colors.sageGreen, colors.skyBlue, colors.sageGreen];
 const GALLERY_ROWS = [GALLERY_PLACEHOLDERS.slice(0, 2), GALLERY_PLACEHOLDERS.slice(2, 4)];
@@ -43,7 +48,13 @@ export function PlaceDetailPanel({ visible, title, location, addingPlace }: Prop
   const panelHeightRef = useRef(0);
   const [panelHeightMeasured, setPanelHeightMeasured] = useState(0);
   const [notes, setNotes] = useState('');
+
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<PlaceSearchResult[]>([]);
+  const [selectedPlace, setSelectedPlace] = useState<PlaceSearchResult | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const debouncedQuery = useDebouncedValue(searchQuery, SEARCH_DEBOUNCE_MS);
 
   const peekTranslateY = (height: number) => Math.max(0, height - PANEL_PEEK_HEIGHT);
 
@@ -60,13 +71,49 @@ export function PlaceDetailPanel({ visible, title, location, addingPlace }: Prop
   const [prevAddingPlace, setPrevAddingPlace] = useState(addingPlace);
   if (addingPlace !== prevAddingPlace) {
     setPrevAddingPlace(addingPlace);
-    if (addingPlace && !expanded) setExpanded(true);
+    if (addingPlace) {
+      if (!expanded) setExpanded(true);
+      setSearchQuery('');
+      setSearchResults([]);
+      setSelectedPlace(null);
+      setSearchError(null);
+    }
   }
 
   useEffect(() => {
     const target = !visible ? SCREEN_HEIGHT : expanded ? 0 : peekTranslateY(panelHeightMeasured);
     Animated.spring(translateY, { ...SPRING_CONFIG, toValue: target }).start();
   }, [visible, expanded, panelHeightMeasured, translateY]);
+
+  const trimmedQuery = debouncedQuery.trim();
+  const queryTooShort = trimmedQuery.length < MIN_QUERY_LENGTH;
+
+  useEffect(() => {
+    // Stale results/errors from a longer query are simply not rendered once the query shrinks
+    // below the threshold (see the render below) — no need to clear them here too.
+    if (!addingPlace || selectedPlace || queryTooShort) return;
+    const query = trimmedQuery;
+    let cancelled = false;
+    // This is the standard React-docs data-fetching pattern (setState before kicking off the
+    // async call, guarded by a `cancelled` flag in the cleanup) — the rule can't tell that from
+    // "deriving state synchronously," hence the suppression.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSearching(true);
+    setSearchError(null);
+    searchPlaces(query)
+      .then((found) => {
+        if (!cancelled) setSearchResults(found);
+      })
+      .catch((err) => {
+        if (!cancelled) setSearchError(err instanceof Error ? err.message : 'Search failed.');
+      })
+      .finally(() => {
+        if (!cancelled) setSearching(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [trimmedQuery, queryTooShort, addingPlace, selectedPlace]);
 
   // dragStartY/panelHeightRef are only ever read/written inside these handlers, never during
   // render — the rule can't see that the closure is deferred, hence the suppression.
@@ -109,6 +156,21 @@ export function PlaceDetailPanel({ visible, title, location, addingPlace }: Prop
     Linking.openURL(`https://maps.apple.com/?ll=${location.lat},${location.lon}`);
   };
 
+  const handleSearchChange = (text: string) => {
+    setSearchQuery(text);
+    if (selectedPlace) setSelectedPlace(null);
+  };
+
+  const handleSelectResult = (result: PlaceSearchResult) => {
+    setSelectedPlace(result);
+    setSearchQuery(result.name);
+    setSearchResults([]);
+  };
+
+  const handleAddPlace = () => {
+    // Stub — saving to the database is wired up separately.
+  };
+
   return (
     <Animated.View
       pointerEvents={visible ? 'auto' : 'none'}
@@ -124,43 +186,86 @@ export function PlaceDetailPanel({ visible, title, location, addingPlace }: Prop
         </View>
       </View>
 
-      {addingPlace ? (
-        <TextInput
-          placeholder="Search for a place…"
-          placeholderTextColor={colors.inkSoft}
-          value={searchQuery}
-          onChangeText={setSearchQuery}
-          style={styles.searchInput}
-        />
-      ) : location ? (
-        <>
-          <View style={styles.gallery}>
-            {GALLERY_ROWS.map((row, rowIndex) => (
-              <View key={rowIndex} style={styles.galleryRow}>
-                {row.map((color, colIndex) => (
-                  <View key={colIndex} style={[styles.photo, { backgroundColor: color }]} />
+      <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+        {addingPlace ? (
+          <>
+            <TextInput
+              placeholder="Search for a place…"
+              placeholderTextColor={colors.inkSoft}
+              value={searchQuery}
+              onChangeText={handleSearchChange}
+              style={styles.searchInput}
+            />
+
+            {queryTooShort ? null : searching ? (
+              <ActivityIndicator color={colors.inkSoft} style={styles.searchStatus} />
+            ) : searchError ? (
+              <Text style={styles.searchError}>{searchError}</Text>
+            ) : !selectedPlace && searchResults.length > 0 ? (
+              <View style={styles.resultsList}>
+                {searchResults.map((result) => (
+                  <Pressable
+                    key={result.id}
+                    onPress={() => handleSelectResult(result)}
+                    style={({ pressed }) => [styles.resultRow, pressed && styles.resultRowPressed]}
+                  >
+                    <Text style={styles.resultName}>{result.name}</Text>
+                    {result.formattedAddress ? (
+                      <Text style={styles.resultAddress}>{result.formattedAddress}</Text>
+                    ) : null}
+                  </Pressable>
                 ))}
               </View>
-            ))}
-          </View>
+            ) : null}
 
-          <Pressable
-            onPress={handleOpenMaps}
-            style={({ pressed }) => [styles.mapsButton, pressed && styles.mapsButtonPressed]}
-          >
-            <Text style={styles.mapsButtonLabel}>Open in Maps</Text>
-          </Pressable>
+            {selectedPlace ? (
+              <>
+                <Pressable
+                  onPress={handleAddPlace}
+                  style={({ pressed }) => [
+                    styles.mapsButton,
+                    styles.addPlaceButton,
+                    pressed && styles.mapsButtonPressed,
+                  ]}
+                >
+                  <Text style={styles.mapsButtonLabel}>Add place</Text>
+                </Pressable>
 
-          <TextInput
-            placeholder="Add a note about this place…"
-            placeholderTextColor={colors.inkSoft}
-            value={notes}
-            onChangeText={setNotes}
-            multiline
-            style={styles.notesInput}
-          />
-        </>
-      ) : null}
+                <Text style={styles.metadataHeading}>Raw API response</Text>
+                <Text style={styles.metadata}>{JSON.stringify(selectedPlace.raw, null, 2)}</Text>
+              </>
+            ) : null}
+          </>
+        ) : location ? (
+          <>
+            <View style={styles.gallery}>
+              {GALLERY_ROWS.map((row, rowIndex) => (
+                <View key={rowIndex} style={styles.galleryRow}>
+                  {row.map((color, colIndex) => (
+                    <View key={colIndex} style={[styles.photo, { backgroundColor: color }]} />
+                  ))}
+                </View>
+              ))}
+            </View>
+
+            <Pressable
+              onPress={handleOpenMaps}
+              style={({ pressed }) => [styles.mapsButton, pressed && styles.mapsButtonPressed]}
+            >
+              <Text style={styles.mapsButtonLabel}>Open in Maps</Text>
+            </Pressable>
+
+            <TextInput
+              placeholder="Add a note about this place…"
+              placeholderTextColor={colors.inkSoft}
+              value={notes}
+              onChangeText={setNotes}
+              multiline
+              style={styles.notesInput}
+            />
+          </>
+        ) : null}
+      </ScrollView>
     </Animated.View>
   );
 }
@@ -245,5 +350,56 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingVertical: 14,
     backgroundColor: colors.panelBackground,
+  },
+  searchStatus: {
+    marginTop: spacing.md,
+  },
+  searchError: {
+    fontFamily: fonts.body,
+    fontSize: 13,
+    color: colors.error,
+    marginTop: spacing.sm,
+  },
+  resultsList: {
+    marginTop: spacing.sm,
+  },
+  resultRow: {
+    paddingVertical: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.hairline,
+  },
+  resultRowPressed: {
+    backgroundColor: colors.panelBackground,
+  },
+  resultName: {
+    fontFamily: fonts.bodyMedium,
+    fontSize: 15,
+    color: colors.ink,
+  },
+  resultAddress: {
+    fontFamily: fonts.body,
+    fontSize: 13,
+    color: colors.inkSoft,
+    marginTop: 2,
+  },
+  addPlaceButton: {
+    marginTop: spacing.md,
+  },
+  metadataHeading: {
+    fontFamily: fonts.bodyMedium,
+    fontSize: 13,
+    color: colors.inkSoft,
+    marginTop: spacing.lg,
+    marginBottom: spacing.xs,
+  },
+  metadata: {
+    fontFamily: fonts.body,
+    fontSize: 12,
+    lineHeight: 17,
+    color: colors.inkSoft,
+    backgroundColor: colors.panelBackground,
+    borderRadius: radii.md,
+    padding: spacing.sm,
+    marginBottom: spacing.lg,
   },
 });
