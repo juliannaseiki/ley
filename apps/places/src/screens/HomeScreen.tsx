@@ -30,6 +30,10 @@ export function HomeScreen() {
     setPanelVisible(true);
   };
 
+  const handlePlaceSaved = () => {
+    setAddingPlace(false);
+  };
+
   const email = session?.user?.email;
   const panelTitle = addingPlace
     ? 'Add a place'
@@ -57,6 +61,7 @@ export function HomeScreen() {
         title={panelTitle}
         location={tappedLocation}
         addingPlace={addingPlace}
+        onPlaceSaved={handlePlaceSaved}
       />
 
       <Pressable
