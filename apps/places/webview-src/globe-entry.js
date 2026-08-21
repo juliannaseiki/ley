@@ -119,7 +119,7 @@ let dpr = Math.min(DPR_CAP, Math.max(1, window.devicePixelRatio || 1));
 let rotation = [10, -12]; // [lambda, phi], degrees
 let zoom = 2;
 const MIN_ZOOM = 1;
-const MAX_ZOOM = 100;
+const MAX_ZOOM = 1000;
 // Exponent applied to the raw pinch finger-distance ratio (see onPointerMove) — tuned so a single
 // comfortable pinch (roughly tripling finger distance) already clears every city reveal
 // threshold.
@@ -257,6 +257,99 @@ let fadingOutRegionLabels = []; // [{ name, glyphs, fadeOutStartAt }]
 // Shared fade duration for region labels' own fade in/out (see the draw and recompute sites
 // below) — was also shared with astro line labels before those were removed for this app.
 const LABEL_FADE_MS = 220;
+
+// Saved-place pins — chat-bubble markers for the user's saved places. Pushed in live from React
+// Native via postMessage (see the RN<->WebView messaging section below) rather than baked in at
+// build time like the rest of the map, since this data is per-user and changes at runtime.
+const PIN_FLOWER_EMOJIS = ['🌸', '🌷', '🌹', '🌺', '🌻', '🌼'];
+const PIN_BUBBLE_SIZE = 34; // diameter of the bubble body, CSS px
+const PIN_BUBBLE_RADIUS = 10; // corner radius of the bubble body
+const PIN_TAIL_HEIGHT = 9; // gap between the bubble's bottom edge and the exact lat/lon point
+const PIN_FONT = `${Math.round(PIN_BUBBLE_SIZE * 0.55)}px -apple-system, BlinkMacSystemFont, system-ui, sans-serif`;
+let savedPlacePins = []; // [{ id, lon, lat, emoji }] — set via the 'setSavedPlaces' RN message
+let pinHitboxes = []; // rebuilt every frame in drawSavedPlacePins; consumed by handleTap
+
+// A stable (not random-per-frame) emoji per place, so a given pin always shows the same flower —
+// derived from the place id itself rather than stored separately, so there's nothing to keep in
+// sync if the same place list gets pushed in again.
+function emojiForPlaceId(id) {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
+  return PIN_FLOWER_EMOJIS[hash % PIN_FLOWER_EMOJIS.length];
+}
+
+// Manual rounded-rect path (arcTo is far more broadly supported than ctx.roundRect) for the
+// bubble body below.
+function traceRoundedRectPath(cx, left, top, size, radius) {
+  const right = left + size;
+  const bottom = top + size;
+  cx.beginPath();
+  cx.moveTo(left + radius, top);
+  cx.lineTo(right - radius, top);
+  cx.arcTo(right, top, right, top + radius, radius);
+  cx.lineTo(right, bottom - radius);
+  cx.arcTo(right, bottom, right - radius, bottom, radius);
+  cx.lineTo(left + radius, bottom);
+  cx.arcTo(left, bottom, left, bottom - radius, radius);
+  cx.lineTo(left, top + radius);
+  cx.arcTo(left, top, left + radius, top, radius);
+  cx.closePath();
+}
+
+// Drawn last (after everything else, including labels) so pins are never hidden underneath the
+// map itself — see the call site in renderInner.
+function drawSavedPlacePins() {
+  pinHitboxes = [];
+  if (savedPlacePins.length === 0) return;
+
+  const half = PIN_BUBBLE_SIZE / 2;
+  ctx.font = PIN_FONT;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  for (const pin of savedPlacePins) {
+    if (!isFrontFacing([pin.lon, pin.lat])) continue;
+    const p = projection([pin.lon, pin.lat]);
+    if (!p) continue;
+    const [x, y] = p;
+    if (x < -half || x > width + half || y < -PIN_BUBBLE_SIZE || y > height + half) continue;
+
+    const bubbleBottom = y - PIN_TAIL_HEIGHT;
+    const bubbleTop = bubbleBottom - PIN_BUBBLE_SIZE;
+    const left = x - half;
+
+    // Tail: filled only (no stroke), so it reads as a seamless extension of the bubble above it
+    // rather than a separately outlined shape.
+    ctx.beginPath();
+    ctx.moveTo(x - 6, bubbleBottom - 1);
+    ctx.lineTo(x, y);
+    ctx.lineTo(x + 6, bubbleBottom - 1);
+    ctx.closePath();
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fill();
+
+    traceRoundedRectPath(ctx, left, bubbleTop, PIN_BUBBLE_SIZE, PIN_BUBBLE_RADIUS);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = THEME.landStroke;
+    ctx.stroke();
+
+    ctx.fillText(pin.emoji, x, bubbleTop + half);
+
+    pinHitboxes.push({
+      id: pin.id,
+      lon: pin.lon,
+      lat: pin.lat,
+      x,
+      y,
+      radius: half + PIN_TAIL_HEIGHT + 6,
+    });
+  }
+
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+}
 
 function resize() {
   const rect = canvas.getBoundingClientRect();
@@ -528,6 +621,9 @@ function renderInner() {
   ctx.lineWidth = 0.5;
   ctx.strokeStyle = THEME.globeOutline;
   ctx.stroke();
+
+  // Saved-place pins — drawn after everything else on the map so they always sit on top.
+  drawSavedPlacePins();
 
   // On-screen zoom readout, top-left, drawn last so it's always legible regardless of what's
   // underneath.
@@ -806,6 +902,26 @@ function recomputeRegionLabels() {
 }
 
 function tick(now) {
+  if (flyToAnimation) {
+    const t = clamp((now - flyToAnimation.startTime) / FLY_TO_DURATION_MS, 0, 1);
+    const eased = easeInOutCubic(t);
+    rotation[0] = flyToAnimation.startLambda + flyToAnimation.lambdaDelta * eased;
+    rotation[1] = flyToAnimation.startPhi + flyToAnimation.phiDelta * eased;
+    zoom = flyToAnimation.startZoom + flyToAnimation.zoomDelta * eased;
+    applyScale();
+    render();
+    if (t >= 1) {
+      flyToAnimation = null;
+      // Same "exact match at the end of a camera move" recompute already done at ordinary
+      // gesture end (see onPointerUp) — the flight is a camera move too, just not driven by a
+      // pointer gesture.
+      recomputeCityLabels();
+      if (SHOW_REGION_LABELS) recomputeRegionLabels();
+    }
+    requestAnimationFrame(tick);
+    return;
+  }
+
   // Keep rendering through an in-progress label fade (in or out) even when otherwise still, so
   // the animation actually plays instead of snapping straight to its end state on the next
   // redraw — matters most for city labels, since a fade starts right at gesture end, when nothing
@@ -918,14 +1034,63 @@ function onPointerUp(e) {
   }
 }
 
-function handleTap(x, y) {
-  const lonLat = projection.invert([x, y]);
-  if (!lonLat) return;
-  const roundTrip = projection(lonLat);
-  if (!roundTrip || Math.hypot(roundTrip[0] - x, roundTrip[1] - y) > 2) return;
+// Animated camera move to center a tapped pin at max zoom — driven every frame from tick() below
+// while active (tick otherwise stays idle when nothing needs to redraw, per its own comment).
+// null when no flight is in progress.
+let flyToAnimation = null; // { startLambda, lambdaDelta, startPhi, phiDelta, startZoom, zoomDelta, startTime }
+const FLY_TO_DURATION_MS = 700;
 
-  const [lon, lat] = lonLat;
-  postToRN({ type: 'tap', lon, lat });
+function easeInOutCubic(t) {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
+// Longitude wraps at +-180 — always taking the shortest way round rather than the raw numeric
+// difference means a pin near the antimeridian never spins the long way across the globe.
+function shortestAngleDeltaDeg(from, to) {
+  return (((to - from + 180) % 360) + 360) % 360 - 180;
+}
+
+// The place-detail panel covers the bottom of the screen at this fraction of its height (see
+// PlaceDetailPanel.tsx's `panel.height` style — RN and this WebView bundle are separate build
+// contexts, so this can't be a literal shared constant, just kept in sync by hand).
+const PANEL_HEIGHT_FRACTION = 0.58;
+
+function flyToLocation(lon, lat, targetZoom) {
+  const targetLambda = -lon;
+  // Centering the raw target latitude would put the pin at the canvas's true vertical center —
+  // which sits behind the panel. Nudging the "look-at" latitude south by a small angle shifts the
+  // point north within the projection, landing it in the middle of the exposed strip above the
+  // panel instead. The angle is computed from a fixed screen-pixel offset converted at the
+  // *target* zoom/scale (small-angle approximation, accurate here since this only ever targets
+  // MAX_ZOOM, where the resulting angle is tiny).
+  const targetScale = baseScale * targetZoom;
+  const exposedCenterY = (height * (1 - PANEL_HEIGHT_FRACTION)) / 2;
+  const offsetPx = height / 2 - exposedCenterY;
+  const offsetDeg = (offsetPx / targetScale) * (180 / Math.PI);
+  const targetPhi = -lat + offsetDeg;
+  flyToAnimation = {
+    startLambda: rotation[0],
+    lambdaDelta: shortestAngleDeltaDeg(rotation[0], targetLambda),
+    startPhi: rotation[1],
+    phiDelta: targetPhi - rotation[1],
+    startZoom: zoom,
+    zoomDelta: targetZoom - zoom,
+    startTime: performance.now(),
+  };
+}
+
+// Only saved-place pins respond to a tap — pinHitboxes is rebuilt every frame by
+// drawSavedPlacePins, so this always checks against wherever pins were actually last drawn.
+// Tapping empty map (not a pin) is intentionally a no-op; there's no RN listener for a generic
+// lon/lat tap anymore.
+function handleTap(x, y) {
+  for (const hitbox of pinHitboxes) {
+    if (Math.hypot(x - hitbox.x, y - hitbox.y) <= hitbox.radius) {
+      postToRN({ type: 'pinTap', placeId: hitbox.id });
+      flyToLocation(hitbox.lon, hitbox.lat, MAX_ZOOM);
+      return;
+    }
+  }
 }
 
 canvas.addEventListener('pointerdown', onPointerDown);
@@ -935,15 +1100,37 @@ canvas.addEventListener('pointercancel', onPointerUp);
 window.addEventListener('resize', resize);
 
 // --- RN <-> WebView messaging ------------------------------------------
-// Currently outbound-only ('ready' below, 'tap' from handleTap) — nothing yet needs to be pushed
-// in from React Native at runtime, since all map data is baked in at build time. Add a
-// window/document 'message' listener here if a future feature needs to push data in live.
+// Outbound: 'ready' below, 'tap'/'pinTap' from handleTap. Inbound: 'setSavedPlaces', pushed from
+// React Native whenever the user's saved-places list changes — that data is per-user and can't be
+// baked in at build time like the rest of the map.
 
 function postToRN(message) {
   if (window.ReactNativeWebView) {
     window.ReactNativeWebView.postMessage(JSON.stringify(message));
   }
 }
+
+function handleRNMessage(event) {
+  let message;
+  try {
+    message = JSON.parse(event.data);
+  } catch {
+    return;
+  }
+  if (message.type === 'setSavedPlaces' && Array.isArray(message.places)) {
+    savedPlacePins = message.places.map((place) => ({
+      id: place.id,
+      lon: place.lon,
+      lat: place.lat,
+      emoji: emojiForPlaceId(place.id),
+    }));
+    render();
+  }
+}
+// react-native-webview fires the message event on document on Android and window on iOS —
+// listening on both is the standard cross-platform way to handle it.
+window.addEventListener('message', handleRNMessage);
+document.addEventListener('message', handleRNMessage);
 
 resize();
 requestAnimationFrame(tick);

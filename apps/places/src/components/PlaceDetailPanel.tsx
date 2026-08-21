@@ -15,6 +15,8 @@ import {
 import { colors, fonts, radii, spacing, useDebouncedValue } from '@ley/ui';
 import { supabase, useAuth } from '@ley/auth';
 import { searchPlaces, PlaceSearchResult } from '../lib/foursquarePlaces';
+import { emojiForPlaceId } from '../lib/placeEmoji';
+import { SavedPlace } from '../types/place';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 export const PANEL_PEEK_HEIGHT = SCREEN_HEIGHT / 3;
@@ -31,26 +33,29 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
-type SavedPlace = {
-  id: string;
-  name: string;
-  category: string | null;
-  formatted_address: string | null;
-  latitude: number;
-  longitude: number;
-};
-
 const SAVED_PLACE_COLUMNS = 'id, name, category, formatted_address, latitude, longitude';
 
 type Props = {
   visible: boolean;
   title: string;
-  location: { lat: number; lon: number } | null;
+  selectedSavedPlace: SavedPlace | null;
   addingPlace: boolean;
-  onPlaceSaved: () => void;
+  savedPlaces: SavedPlace[];
+  savedPlacesLoading: boolean;
+  savedPlacesError: string | null;
+  onPlaceSaved: (place: SavedPlace) => void;
 };
 
-export function PlaceDetailPanel({ visible, title, location, addingPlace, onPlaceSaved }: Props) {
+export function PlaceDetailPanel({
+  visible,
+  title,
+  selectedSavedPlace,
+  addingPlace,
+  savedPlaces,
+  savedPlacesLoading,
+  savedPlacesError,
+  onPlaceSaved,
+}: Props) {
   const { session } = useAuth();
   const [translateY] = useState(() => new Animated.Value(SCREEN_HEIGHT));
   const [expanded, setExpanded] = useState(true);
@@ -72,20 +77,16 @@ export function PlaceDetailPanel({ visible, title, location, addingPlace, onPlac
   const [saveError, setSaveError] = useState<string | null>(null);
   const debouncedQuery = useDebouncedValue(searchQuery, SEARCH_DEBOUNCE_MS);
 
-  const [savedPlaces, setSavedPlaces] = useState<SavedPlace[]>([]);
-  const [savedPlacesLoading, setSavedPlacesLoading] = useState(false);
-  const [savedPlacesError, setSavedPlacesError] = useState<string | null>(null);
-
   const peekTranslateY = (height: number) => Math.max(0, height - PANEL_PEEK_HEIGHT);
 
-  // A new tapped location, or entering the add-place flow, should always re-open the panel
-  // fully, even if it was left peeked from before — adjusted during render (React's recommended
-  // pattern for state that depends on a prop change) rather than an effect, since setState-in-
-  // effect on every mount triggers a needless extra render.
-  const [prevLocation, setPrevLocation] = useState(location);
-  if (location !== prevLocation) {
-    setPrevLocation(location);
-    if (location && !expanded) setExpanded(true);
+  // Selecting a new saved place (a pin tap), or entering the add-place flow, should always
+  // re-open the panel fully, even if it was left peeked from before — adjusted during render
+  // (React's recommended pattern for state that depends on a prop change) rather than an effect,
+  // since setState-in-effect on every mount triggers a needless extra render.
+  const [prevSelectedSavedPlace, setPrevSelectedSavedPlace] = useState(selectedSavedPlace);
+  if (selectedSavedPlace !== prevSelectedSavedPlace) {
+    setPrevSelectedSavedPlace(selectedSavedPlace);
+    if (selectedSavedPlace && !expanded) setExpanded(true);
   }
 
   const [prevAddingPlace, setPrevAddingPlace] = useState(addingPlace);
@@ -135,33 +136,6 @@ export function PlaceDetailPanel({ visible, title, location, addingPlace, onPlac
     };
   }, [trimmedQuery, queryTooShort, addingPlace, selectedPlace]);
 
-  const userId = session?.user?.id;
-
-  useEffect(() => {
-    if (!userId) return;
-    let cancelled = false;
-    // Same standard data-fetching pattern as the search effect above.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setSavedPlacesLoading(true);
-    setSavedPlacesError(null);
-    supabase
-      .from('saved_places')
-      .select(SAVED_PLACE_COLUMNS)
-      .order('created_at', { ascending: false })
-      .then(({ data, error }) => {
-        if (cancelled) return;
-        if (error) {
-          setSavedPlacesError(error.message);
-        } else {
-          setSavedPlaces(data ?? []);
-        }
-        setSavedPlacesLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [userId]);
-
   // dragStartY/panelHeightRef are only ever read/written inside these handlers, never during
   // render — the rule can't see that the closure is deferred, hence the suppression.
   // eslint-disable-next-line react-hooks/refs
@@ -199,8 +173,10 @@ export function PlaceDetailPanel({ visible, title, location, addingPlace, onPlac
   );
 
   const handleOpenMaps = () => {
-    if (!location) return;
-    Linking.openURL(`https://maps.apple.com/?ll=${location.lat},${location.lon}`);
+    if (!selectedSavedPlace) return;
+    Linking.openURL(
+      `https://maps.apple.com/?ll=${selectedSavedPlace.latitude},${selectedSavedPlace.longitude}`
+    );
   };
 
   const handleSearchChange = (text: string) => {
@@ -238,8 +214,7 @@ export function PlaceDetailPanel({ visible, title, location, addingPlace, onPlac
       setSaveError(error.message);
       return;
     }
-    if (data) setSavedPlaces((prev) => [data, ...prev]);
-    onPlaceSaved();
+    if (data) onPlaceSaved(data);
   };
 
   return (
@@ -253,6 +228,9 @@ export function PlaceDetailPanel({ visible, title, location, addingPlace, onPlac
     >
       <View {...panResponder.panHandlers}>
         <View style={styles.headerRow}>
+          {selectedSavedPlace ? (
+            <Text style={styles.headerEmoji}>{emojiForPlaceId(selectedSavedPlace.id)}</Text>
+          ) : null}
           <Text style={styles.title}>{title}</Text>
         </View>
       </View>
@@ -312,8 +290,16 @@ export function PlaceDetailPanel({ visible, title, location, addingPlace, onPlac
               </>
             ) : null}
           </>
-        ) : location ? (
+        ) : selectedSavedPlace ? (
           <>
+            {selectedSavedPlace.category || selectedSavedPlace.formatted_address ? (
+              <Text style={styles.selectedPlaceSubtitle}>
+                {[selectedSavedPlace.category, selectedSavedPlace.formatted_address]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </Text>
+            ) : null}
+
             <View style={styles.gallery}>
               {GALLERY_ROWS.map((row, rowIndex) => (
                 <View key={rowIndex} style={styles.galleryRow}>
@@ -389,11 +375,23 @@ const styles = StyleSheet.create({
   headerRow: {
     marginBottom: spacing.md,
   },
+  headerEmoji: {
+    fontSize: 32,
+    textAlign: 'center',
+    marginBottom: spacing.xs,
+  },
   title: {
     fontFamily: fonts.headingSemiBold,
     fontSize: 22,
     color: colors.ink,
     textAlign: 'center',
+  },
+  selectedPlaceSubtitle: {
+    fontFamily: fonts.body,
+    fontSize: 13,
+    color: colors.inkSoft,
+    textAlign: 'center',
+    marginBottom: spacing.md,
   },
   gallery: {
     gap: spacing.sm,

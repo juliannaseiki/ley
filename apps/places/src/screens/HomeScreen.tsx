@@ -1,10 +1,13 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Globe } from '../components/Globe';
 import { PlaceDetailPanel } from '../components/PlaceDetailPanel';
-import { useAuth } from '@ley/auth';
+import { useAuth, supabase } from '@ley/auth';
 import { colors, fonts, radii, spacing } from '@ley/ui';
+import { SavedPlace } from '../types/place';
+
+const SAVED_PLACE_COLUMNS = 'id, name, category, formatted_address, latitude, longitude';
 
 function firstNameFromEmail(email: string): string {
   const local = email.split('@')[0] ?? '';
@@ -16,11 +19,46 @@ export function HomeScreen() {
   const insets = useSafeAreaInsets();
   const { session, signOut } = useAuth();
   const [panelVisible, setPanelVisible] = useState(true);
-  const [tappedLocation, setTappedLocation] = useState<{ lat: number; lon: number } | null>(null);
+  const [selectedSavedPlace, setSelectedSavedPlace] = useState<SavedPlace | null>(null);
   const [addingPlace, setAddingPlace] = useState(false);
 
-  const handleTapLocation = (lat: number, lon: number) => {
-    setTappedLocation({ lat, lon });
+  const [savedPlaces, setSavedPlaces] = useState<SavedPlace[]>([]);
+  const [savedPlacesLoading, setSavedPlacesLoading] = useState(false);
+  const [savedPlacesError, setSavedPlacesError] = useState<string | null>(null);
+
+  const userId = session?.user?.id;
+
+  useEffect(() => {
+    if (!userId) return;
+    let cancelled = false;
+    // Standard React-docs data-fetching pattern (setState before kicking off the async call,
+    // guarded by a `cancelled` flag in the cleanup) — the rule can't tell that from "deriving
+    // state synchronously," hence the suppression.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSavedPlacesLoading(true);
+    setSavedPlacesError(null);
+    supabase
+      .from('saved_places')
+      .select(SAVED_PLACE_COLUMNS)
+      .order('created_at', { ascending: false })
+      .then(({ data, error }) => {
+        if (cancelled) return;
+        if (error) {
+          setSavedPlacesError(error.message);
+        } else {
+          setSavedPlaces(data ?? []);
+        }
+        setSavedPlacesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
+
+  const handlePinTap = (placeId: string) => {
+    const place = savedPlaces.find((p) => p.id === placeId);
+    if (!place) return;
+    setSelectedSavedPlace(place);
     setAddingPlace(false);
     setPanelVisible(true);
   };
@@ -30,15 +68,16 @@ export function HomeScreen() {
     setPanelVisible(true);
   };
 
-  const handlePlaceSaved = () => {
+  const handlePlaceSaved = (place: SavedPlace) => {
+    setSavedPlaces((prev) => [place, ...prev]);
     setAddingPlace(false);
   };
 
   const email = session?.user?.email;
   const panelTitle = addingPlace
     ? 'Add a place'
-    : tappedLocation
-      ? 'Dropped Pin'
+    : selectedSavedPlace
+      ? selectedSavedPlace.name
       : email
         ? `Welcome ${firstNameFromEmail(email)}`
         : 'Welcome';
@@ -54,13 +93,23 @@ export function HomeScreen() {
         </View>
       </SafeAreaView>
 
-      <Globe onTapLocation={handleTapLocation} />
+      <Globe
+        onPinTap={handlePinTap}
+        savedPlaces={savedPlaces.map((place) => ({
+          id: place.id,
+          lat: place.latitude,
+          lon: place.longitude,
+        }))}
+      />
 
       <PlaceDetailPanel
         visible={panelVisible}
         title={panelTitle}
-        location={tappedLocation}
+        selectedSavedPlace={selectedSavedPlace}
         addingPlace={addingPlace}
+        savedPlaces={savedPlaces}
+        savedPlacesLoading={savedPlacesLoading}
+        savedPlacesError={savedPlacesError}
         onPlaceSaved={handlePlaceSaved}
       />
 
