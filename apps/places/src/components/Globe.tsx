@@ -1,15 +1,35 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import WebView, { WebViewMessageEvent } from 'react-native-webview';
 import { GLOBE_HTML } from '../webview/globeHtml';
 
-type WebViewOutMessage = { type: 'ready' } | { type: 'tap'; lon: number; lat: number };
+type WebViewOutMessage = { type: 'ready' } | { type: 'pinTap'; placeId: string };
 
-type Props = {
-  onTapLocation?: (lat: number, lon: number) => void;
+type GlobePlace = {
+  id: string;
+  lat: number;
+  lon: number;
 };
 
-export function Globe({ onTapLocation }: Props) {
+type Props = {
+  onPinTap?: (placeId: string) => void;
+  savedPlaces?: GlobePlace[];
+};
+
+export function Globe({ onPinTap, savedPlaces = [] }: Props) {
+  const webViewRef = useRef<WebView>(null);
+  const [webViewReady, setWebViewReady] = useState(false);
+
+  useEffect(() => {
+    if (!webViewReady) return;
+    webViewRef.current?.postMessage(
+      JSON.stringify({
+        type: 'setSavedPlaces',
+        places: savedPlaces.map((place) => ({ id: place.id, lat: place.lat, lon: place.lon })),
+      })
+    );
+  }, [webViewReady, savedPlaces]);
+
   const handleMessage = (event: WebViewMessageEvent) => {
     let message: WebViewOutMessage;
     try {
@@ -17,14 +37,17 @@ export function Globe({ onTapLocation }: Props) {
     } catch {
       return;
     }
-    if (message.type === 'tap') {
-      onTapLocation?.(message.lat, message.lon);
+    if (message.type === 'ready') {
+      setWebViewReady(true);
+    } else if (message.type === 'pinTap') {
+      onPinTap?.(message.placeId);
     }
   };
 
   return (
     <View style={styles.container}>
       <WebView
+        ref={webViewRef}
         source={{ html: GLOBE_HTML }}
         onMessage={handleMessage}
         style={styles.webview}
