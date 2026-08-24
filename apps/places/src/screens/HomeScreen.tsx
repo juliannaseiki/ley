@@ -152,6 +152,10 @@ const styles = StyleSheet.create({
   },
   addButton: {
     position: 'absolute',
+    // Higher than PlaceDetailPanel's own zIndex (2) so it stays on top of the panel regardless of
+    // mode/height, same as it always was via plain source order before the panel needed an
+    // explicit zIndex of its own (to render above the header in its full-height add-place mode).
+    zIndex: 3,
     width: 56,
     height: 56,
     borderRadius: radii.pill,

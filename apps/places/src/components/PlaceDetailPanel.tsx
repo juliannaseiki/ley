@@ -12,6 +12,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, fonts, radii, spacing, useDebouncedValue } from '@ley/ui';
 import { supabase, useAuth } from '@ley/auth';
 import { searchPlaces, PlaceSearchResult } from '../lib/foursquarePlaces';
@@ -20,6 +21,10 @@ import { SavedPlace } from '../types/place';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 export const PANEL_PEEK_HEIGHT = SCREEN_HEIGHT / 3;
+// Welcome/place-detail modes keep their usual partial-height sheet; the add-place search flow
+// opens as close to full-screen as the top safe area allows, since it's an active
+// search-and-pick task that benefits from the extra room rather than a glanceable summary.
+const DEFAULT_PANEL_HEIGHT_FRACTION = 0.58;
 const SNAP_DRAG_THRESHOLD = 60;
 const SNAP_VELOCITY_THRESHOLD = 0.5;
 const SPRING_CONFIG = { damping: 18, mass: 0.9, stiffness: 160, useNativeDriver: true } as const;
@@ -57,15 +62,31 @@ export function PlaceDetailPanel({
   onPlaceSaved,
 }: Props) {
   const { session } = useAuth();
-  const [translateY] = useState(() => new Animated.Value(SCREEN_HEIGHT));
+  const insets = useSafeAreaInsets();
+  // The panel's own height never changes — it's always tall enough for its fullest state (the
+  // full-height add-place mode). Every other state (hidden/peeked/normal-expanded) is expressed
+  // purely as how far down translateY pushes this fixed-height sheet, not by resizing it. Height
+  // isn't animatable via the native driver the way transform is (and even a JS-driven height
+  // animation looks janky with a ScrollView reflowing inside it mid-transition), so this is what
+  // lets switching between add-place's full height and the normal partial height be one smooth
+  // spring on translateY — the same animation machinery as every other state change here — rather
+  // than a separate, unanimated snap.
+  const maxPanelHeight = SCREEN_HEIGHT - insets.top;
+  const defaultVisibleHeight = SCREEN_HEIGHT * DEFAULT_PANEL_HEIGHT_FRACTION;
+  const [translateY] = useState(() => new Animated.Value(maxPanelHeight));
   const [expanded, setExpanded] = useState(true);
   const dragStartY = useRef(0);
-  // panelHeightRef is read fresh inside the gesture handlers (created once, so state would be
-  // stale there); panelHeightMeasured is the same value mirrored into state purely so the
-  // positioning effect below re-runs once onLayout reports the real height, instead of running
-  // once on mount with height still 0 and never being told to recompute.
-  const panelHeightRef = useRef(0);
-  const [panelHeightMeasured, setPanelHeightMeasured] = useState(0);
+  // maxPanelHeight/addingPlace are read fresh inside the gesture handlers below (created once via
+  // useState, so a captured render-scope value would go stale there) — mirrored into refs, kept
+  // current after each render via effect (never mutated during render itself — see the ref docs
+  // this lint rule links), same reason panelHeightRef used to exist here before height became a
+  // fixed constant instead of something measured via onLayout.
+  const maxPanelHeightRef = useRef(maxPanelHeight);
+  const addingPlaceRef = useRef(addingPlace);
+  useEffect(() => {
+    maxPanelHeightRef.current = maxPanelHeight;
+    addingPlaceRef.current = addingPlace;
+  }, [maxPanelHeight, addingPlace]);
   const [notes, setNotes] = useState('');
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -77,7 +98,11 @@ export function PlaceDetailPanel({
   const [saveError, setSaveError] = useState<string | null>(null);
   const debouncedQuery = useDebouncedValue(searchQuery, SEARCH_DEBOUNCE_MS);
 
-  const peekTranslateY = (height: number) => Math.max(0, height - PANEL_PEEK_HEIGHT);
+  // translateY needed to show exactly `visibleHeight` of the panel above the bottom of the screen.
+  const translateYForVisibleHeight = (visibleHeight: number) => maxPanelHeight - visibleHeight;
+  // How much of the panel is visible when fully expanded depends on mode: the full fixed height
+  // in add-place mode, the usual partial height otherwise.
+  const expandedVisibleHeight = addingPlace ? maxPanelHeight : defaultVisibleHeight;
 
   // Selecting a new saved place (a pin tap), or entering the add-place flow, should always
   // re-open the panel fully, even if it was left peeked from before — adjusted during render
@@ -102,9 +127,16 @@ export function PlaceDetailPanel({
   }
 
   useEffect(() => {
-    const target = !visible ? SCREEN_HEIGHT : expanded ? 0 : peekTranslateY(panelHeightMeasured);
-    Animated.spring(translateY, { ...SPRING_CONFIG, toValue: target }).start();
-  }, [visible, expanded, panelHeightMeasured, translateY]);
+    const targetVisibleHeight = !visible ? 0 : expanded ? expandedVisibleHeight : PANEL_PEEK_HEIGHT;
+    Animated.spring(translateY, {
+      ...SPRING_CONFIG,
+      toValue: translateYForVisibleHeight(targetVisibleHeight),
+    }).start();
+    // translateYForVisibleHeight is a fresh closure every render but is fully determined by
+    // maxPanelHeight, which is already listed — adding the function itself would just make the
+    // effect re-run on every render for no behavioral difference.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, expanded, expandedVisibleHeight, maxPanelHeight, translateY]);
 
   const trimmedQuery = debouncedQuery.trim();
   const queryTooShort = trimmedQuery.length < MIN_QUERY_LENGTH;
@@ -136,8 +168,8 @@ export function PlaceDetailPanel({
     };
   }, [trimmedQuery, queryTooShort, addingPlace, selectedPlace]);
 
-  // dragStartY/panelHeightRef are only ever read/written inside these handlers, never during
-  // render — the rule can't see that the closure is deferred, hence the suppression.
+  // dragStartY/maxPanelHeightRef/addingPlaceRef are only ever read/written inside these handlers,
+  // never during render — the rule can't see that the closure is deferred, hence the suppression.
   // eslint-disable-next-line react-hooks/refs
   const [panResponder] = useState(() =>
     PanResponder.create({
@@ -149,24 +181,28 @@ export function PlaceDetailPanel({
         });
       },
       onPanResponderMove: (_, gesture) => {
-        const peek = peekTranslateY(panelHeightRef.current);
-        translateY.setValue(clamp(dragStartY.current + gesture.dy, 0, peek));
+        const maxHeight = maxPanelHeightRef.current;
+        const expandedY = maxHeight - (addingPlaceRef.current ? maxHeight : defaultVisibleHeight);
+        const peek = maxHeight - PANEL_PEEK_HEIGHT;
+        translateY.setValue(clamp(dragStartY.current + gesture.dy, expandedY, peek));
       },
       onPanResponderRelease: (_, gesture) => {
-        const peek = peekTranslateY(panelHeightRef.current);
+        const maxHeight = maxPanelHeightRef.current;
+        const expandedY = maxHeight - (addingPlaceRef.current ? maxHeight : defaultVisibleHeight);
+        const peek = maxHeight - PANEL_PEEK_HEIGHT;
         let nextExpanded: boolean;
         if (gesture.dy > SNAP_DRAG_THRESHOLD || gesture.vy > SNAP_VELOCITY_THRESHOLD) {
           nextExpanded = false;
         } else if (gesture.dy < -SNAP_DRAG_THRESHOLD || gesture.vy < -SNAP_VELOCITY_THRESHOLD) {
           nextExpanded = true;
         } else {
-          const finalY = clamp(dragStartY.current + gesture.dy, 0, peek);
-          nextExpanded = finalY < peek / 2;
+          const finalY = clamp(dragStartY.current + gesture.dy, expandedY, peek);
+          nextExpanded = finalY < (expandedY + peek) / 2;
         }
         setExpanded(nextExpanded);
         Animated.spring(translateY, {
           ...SPRING_CONFIG,
-          toValue: nextExpanded ? 0 : peek,
+          toValue: nextExpanded ? expandedY : peek,
         }).start();
       },
     })
@@ -220,11 +256,7 @@ export function PlaceDetailPanel({
   return (
     <Animated.View
       pointerEvents={visible ? 'auto' : 'none'}
-      onLayout={(e) => {
-        panelHeightRef.current = e.nativeEvent.layout.height;
-        setPanelHeightMeasured(e.nativeEvent.layout.height);
-      }}
-      style={[styles.panel, { transform: [{ translateY }] }]}
+      style={[styles.panel, { height: maxPanelHeight, transform: [{ translateY }] }]}
     >
       <View {...panResponder.panHandlers}>
         <View style={styles.headerRow}>
@@ -357,7 +389,10 @@ const styles = StyleSheet.create({
     left: 15,
     right: 15,
     bottom: 0,
-    height: '58%',
+    // Higher than the header's SafeAreaView (zIndex: 1 in HomeScreen.tsx) — only ever matters in
+    // the full-height add-place mode, where the panel's top edge reaches the same safe-area row
+    // the header occupies; at the normal partial height the two never overlap regardless of order.
+    zIndex: 2,
     backgroundColor: colors.white,
     borderWidth: 1,
     borderColor: colors.hairline,
