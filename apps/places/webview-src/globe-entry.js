@@ -131,7 +131,7 @@ const PINCH_ZOOM_POWER = 1.8;
 // switch is meant to be unnoticeable without needing the extra render cost of blending two tiers.
 // Starting points, not final — tune by eye and rebuild (pnpm build:globe + full app relaunch, not
 // just a Metro refresh).
-const COUNTRY_TIER_50M_MIN_ZOOM = 4;
+const COUNTRY_TIER_50M_MIN_ZOOM = MIN_ZOOM;
 const COUNTRY_TIER_10M_MIN_ZOOM = 12;
 function countryTierForZoom(z) {
   if (z < COUNTRY_TIER_50M_MIN_ZOOM) return COUNTRY_TIERS['110m'];
@@ -420,17 +420,31 @@ function renderInner() {
   // leaving it unfilled to just show ocean color through the gap, for the most minimal version of
   // the map. countryTier resolves to whichever of the three Natural Earth resolutions
   // (110m/50m/10m) the current zoom calls for (see countryTierForZoom above) — a hard switch, not
-  // a fade, reused below for the country border layer too. Smoothed (corner-rounded) the same as
-  // every other coastline/border layer in this file; bbox-culled the same as every other
-  // per-piece layer, which matters most at the 10m tier's much higher piece count.
+  // a fade, reused below for the country border layer too. Bbox-culled the same as every other
+  // per-piece layer.
+  //
+  // Smoothing (drawSmoothSubpath's quadratic corner-rounding, see the top of this file) adds real
+  // per-vertex cost — extra buffering plus a quadraticCurveTo instead of a lineTo for every point —
+  // on top of the raw projection work every piece already pays. cullByBbox is a no-op once
+  // capRadiusDeg hits 90 (the whole front hemisphere is on screen, so nothing is off-screen to
+  // cull — see cullByBbox above), which is exactly the case at low zoom right after a tier with a
+  // large piece count (e.g. 50m's ~1,400 pieces, if COUNTRY_TIER_50M_MIN_ZOOM is tuned down near
+  // MIN_ZOOM) becomes active: every piece in the tier gets traced AND smoothed, every frame, for a
+  // shape so small on screen the rounding is imperceptible anyway. Once zoomed in enough that
+  // culling is actually filtering pieces down to what's near the viewport, the smoothing cost is
+  // bounded by that much smaller visible set and is worth paying for the visual quality — same
+  // reasoning the old coarse (plain path)/detail (smoothPath) split used, just keyed off whether
+  // culling is doing anything this frame instead of a fixed always-on/always-detailed split.
   const countryTier = countryTierForZoom(zoom);
+  const smoothLandThisFrame = capRadiusDeg < 90;
+  const landPath = smoothLandThisFrame ? smoothPath : path;
   ctx.beginPath();
   for (let i = 0; i < countryTier.landPieces.length; i++) {
     if (cullByBbox(countryTier.landBboxes[i], capRadiusDeg)) {
-      smoothPath({ type: 'Polygon', coordinates: countryTier.landPieces[i] });
+      landPath({ type: 'Polygon', coordinates: countryTier.landPieces[i] });
     }
   }
-  smoothPathContext.flush();
+  if (smoothLandThisFrame) smoothPathContext.flush();
   ctx.fillStyle = THEME.land;
   ctx.fill();
   // Coastline/continent outline — heavier than the country-border weight below, per the line-
