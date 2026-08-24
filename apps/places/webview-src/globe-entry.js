@@ -922,6 +922,10 @@ function onPointerDown(e) {
   if (pointers.size === 1) {
     dragLast = { x: e.clientX, y: e.clientY };
     tapCandidate = { x: e.clientX, y: e.clientY, t: Date.now() };
+    // Reset the low-pass filter at the start of every new drag so a leftover smoothed value from
+    // the previous gesture can't cause a small unwanted nudge before this one has moved at all.
+    smoothedDx = 0;
+    smoothedDy = 0;
   } else {
     tapCandidate = null;
   }
@@ -931,23 +935,42 @@ function onPointerDown(e) {
   }
 }
 
+// Real touchscreens report genuine sub-pixel noise/hand tremor on every single pointermove event
+// (especially at 120Hz on ProMotion displays) — a still or slowly-moving finger still produces a
+// stream of tiny, jittery dx/dy values, unlike the simulator's mouse-drag simulation of touch,
+// which has none of that. Applying raw per-event deltas straight to rotation (as this used to)
+// tracks that noise 1:1, which reads as a twitchy/unstable globe on a real device even though the
+// same code felt fine in the simulator. smoothedDx/Dy low-pass filter the deltas — each frame
+// blends a fraction (DRAG_SMOOTHING) of the new raw delta into a running value, damping
+// frame-to-frame noise while still tracking a real, sustained drag closely (a higher
+// DRAG_SMOOTHING means less filtering/more immediate response; lower means smoother but laggier).
+let smoothedDx = 0;
+let smoothedDy = 0;
+const DRAG_SMOOTHING = 0.5;
+
 function onPointerMove(e) {
   if (!pointers.has(e.pointerId)) return;
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
   if (pointers.size === 1 && dragLast) {
-    const dx = e.clientX - dragLast.x;
-    const dy = e.clientY - dragLast.y;
+    const rawDx = e.clientX - dragLast.x;
+    const rawDy = e.clientY - dragLast.y;
     dragLast = { x: e.clientX, y: e.clientY };
+    smoothedDx += (rawDx - smoothedDx) * DRAG_SMOOTHING;
+    smoothedDy += (rawDy - smoothedDy) * DRAG_SMOOTHING;
 
     if (tapCandidate) {
       const moved = Math.hypot(e.clientX - tapCandidate.x, e.clientY - tapCandidate.y);
       if (moved > 6) tapCandidate = null;
     }
 
-    const rotSpeed = 220 / (baseScale * zoom);
-    rotation[0] += dx * rotSpeed;
-    rotation[1] = clamp(rotation[1] - dy * rotSpeed, -85, 85);
+    // Lowered from 220 alongside the smoothing above — real touch input's higher event rate
+    // means more individual pointermove events contribute to a drag of the same physical
+    // distance than the simulator's coarser mouse-drag simulation did, so the old constant (tuned
+    // against the simulator) read as oversensitive on real hardware.
+    const rotSpeed = 150 / (baseScale * zoom);
+    rotation[0] += smoothedDx * rotSpeed;
+    rotation[1] = clamp(rotation[1] - smoothedDy * rotSpeed, -85, 85);
     maybeRecomputeCityLabelsDuringGesture();
     render();
   } else if (pointers.size === 2 && pinchStart) {
