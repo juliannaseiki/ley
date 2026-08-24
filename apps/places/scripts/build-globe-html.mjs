@@ -91,27 +91,34 @@ function bboxOf(coordinates) {
 // admin-1 data below) is both the land shape (via topojson-client's merge, unioning every country
 // into one fillable shape) and the country border lines (via mesh) at each scale, from a single
 // source per tier — so the coastline and the border along it can't disagree the way two
-// independently-sourced layers could. 110m and 10m aren't run through mapshaper's -simplify:
-// they're Natural Earth's own named-scale, already-generalized files, so an additional arbitrary
-// simplification percentage isn't needed on top.
+// independently-sourced layers could. 110m isn't run through mapshaper's -simplify: it's Natural
+// Earth's own named-scale, already-generalized file, so an additional arbitrary simplification
+// percentage isn't needed on top, and its piece count is small enough (~120) that there's nothing
+// to gain simplifying it further.
 //
 //   npx mapshaper -i ne_110m_admin_0_countries.geojson -explode \
 //     -filter-fields ADMIN -rename-fields name=ADMIN \
 //     -o format=topojson quantization=1e5 countries-110m.json
-//   npx mapshaper -i ne_10m_admin_0_countries.geojson -explode \
-//     -filter-fields ADMIN -rename-fields name=ADMIN \
-//     -o format=topojson quantization=1e5 countries-10m.json
 //
-// 50m gets an extra -simplify 50% keep-shapes on top: COUNTRY_TIER_50M_MIN_ZOOM was lowered to
-// MIN_ZOOM (see globe-entry.js) so 50m is what's shown from the very first frame, where the whole
-// front hemisphere is on screen and bbox culling has nothing to filter — its ~1,400 exploded
-// pieces were all being traced every frame at full point density. Simplifying by half cuts the
-// per-piece point count (and so the per-frame projection cost) without a visible quality loss at
-// the scale this renders at; keep-shapes protects small pieces (islands, etc.) from disappearing
-// entirely the way plain -simplify can.
+// 50m and 10m both get an extra -simplify pass on top, for the same underlying reason: each is
+// the tier actually drawn at the low end of its own zoom range, where bbox culling is doing
+// little or no filtering (50m from MIN_ZOOM — see COUNTRY_TIER_50M_MIN_ZOOM in globe-entry.js —
+// 10m from COUNTRY_TIER_10M_MIN_ZOOM), so its full, un-thinned point density gets traced every
+// frame. Measured directly: even after culling, 10m's per-frame point count at zoom 12 was ~13x
+// 50m's (101 points/piece raw average vs 50m's already-halved 23) — the dominant cause of a real,
+// user-reported slowdown right at the 10m handoff. -simplify thins redundant points along each
+// piece's existing coastline (a gentler reduction than dropping whole small islands/features,
+// which reads as visibly "too simple" — tried and rejected for exactly that reason) without
+// changing which land is present. 10m's percentage (35%) is more conservative than 50m's (50%)
+// since it's used at a deeper zoom, where individual points cover more of the screen and are more
+// noticeable if thinned too aggressively; keep-shapes on both protects small pieces (islands,
+// etc.) from disappearing entirely the way plain -simplify can.
 //   npx mapshaper -i ne_50m_admin_0_countries.geojson -explode -simplify 50% keep-shapes \
 //     -filter-fields ADMIN -rename-fields name=ADMIN \
 //     -o format=topojson quantization=1e5 countries-50m.json
+//   npx mapshaper -i ne_10m_admin_0_countries.geojson -explode -simplify 35% keep-shapes \
+//     -filter-fields ADMIN -rename-fields name=ADMIN \
+//     -o format=topojson quantization=1e5 countries-10m.json
 //
 // -explode matters for all three tiers for the same reason: mesh()'s adjacency filter (below)
 // needs every disjoint landmass in its own feature to tell "two pieces of the same country
