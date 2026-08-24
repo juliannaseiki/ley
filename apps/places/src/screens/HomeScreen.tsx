@@ -3,6 +3,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Globe } from '../components/Globe';
 import { PlaceDetailPanel } from '../components/PlaceDetailPanel';
+import { SettingsPanel } from '../components/SettingsPanel';
 import { useAuth, supabase } from '@ley/auth';
 import { colors, fonts, radii, spacing } from '@ley/ui';
 import { SavedPlace } from '../types/place';
@@ -21,6 +22,7 @@ export function HomeScreen() {
   const [panelVisible, setPanelVisible] = useState(true);
   const [selectedSavedPlace, setSelectedSavedPlace] = useState<SavedPlace | null>(null);
   const [addingPlace, setAddingPlace] = useState(false);
+  const [settingsVisible, setSettingsVisible] = useState(false);
 
   const [savedPlaces, setSavedPlaces] = useState<SavedPlace[]>([]);
   const [savedPlacesLoading, setSavedPlacesLoading] = useState(false);
@@ -81,14 +83,17 @@ export function HomeScreen() {
       : email
         ? `Welcome ${firstNameFromEmail(email)}`
         : 'Welcome';
+  // Placeholder avatar until real profile pictures exist — the same first-name derivation "Welcome
+  // {name}" already uses, just reduced to its initial, so the two stay consistent with each other.
+  const avatarInitial = email ? firstNameFromEmail(email).charAt(0).toUpperCase() : '?';
 
   return (
     <View style={styles.container}>
       <SafeAreaView style={styles.headerSafe} edges={['top']}>
         <View style={styles.header}>
           <Text style={styles.wordmark}>ley</Text>
-          <Pressable onPress={() => signOut()} hitSlop={12}>
-            <Text style={styles.signOut}>Log out</Text>
+          <Pressable onPress={() => setSettingsVisible(true)} style={styles.avatarButton} hitSlop={12}>
+            <Text style={styles.avatarInitial}>{avatarInitial}</Text>
           </Pressable>
         </View>
       </SafeAreaView>
@@ -120,6 +125,12 @@ export function HomeScreen() {
       >
         <Text style={styles.addButtonLabel}>+</Text>
       </Pressable>
+
+      <SettingsPanel
+        visible={settingsVisible}
+        onClose={() => setSettingsVisible(false)}
+        onLogout={() => signOut()}
+      />
     </View>
   );
 }
@@ -145,10 +156,20 @@ const styles = StyleSheet.create({
     fontSize: 22,
     color: colors.ink,
   },
-  signOut: {
-    fontFamily: fonts.bodyMedium,
-    fontSize: 13,
-    color: colors.inkSoft,
+  avatarButton: {
+    width: 36,
+    height: 36,
+    borderRadius: radii.pill,
+    backgroundColor: colors.white,
+    borderWidth: 1,
+    borderColor: colors.hairline,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarInitial: {
+    fontFamily: fonts.bodySemiBold,
+    fontSize: 15,
+    color: colors.ink,
   },
   addButton: {
     position: 'absolute',
