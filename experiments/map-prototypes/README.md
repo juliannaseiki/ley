@@ -14,3 +14,6 @@ proven out — not pointing the app at this directory.
 - `natural-earth-tiers/` — three-tier (110m/50m/10m) Natural Earth country data with zoom-based
   level-of-detail switching, as a replacement for the app's current fixed two-tier
   (coarse/detail) mapshaper setup.
+- `two-tier-mapshaper/` — frozen snapshot of `apps/places`'s globe renderer and data as it stood
+  before switching to `natural-earth-tiers`. Not an active prototype — a fallback/comparison
+  copy. See its README for how to restore it into the app if needed.
