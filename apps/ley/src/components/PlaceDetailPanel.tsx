@@ -95,10 +95,12 @@ export function PlaceDetailPanel({
   // instead of something measured via onLayout.
   const maxPanelHeightRef = useRef(maxPanelHeight);
   const panelPeekHeightRef = useRef(panelPeekHeight);
+  const expansionRef = useRef(expansion);
   useEffect(() => {
     maxPanelHeightRef.current = maxPanelHeight;
     panelPeekHeightRef.current = panelPeekHeight;
-  }, [maxPanelHeight, panelPeekHeight]);
+    expansionRef.current = expansion;
+  }, [maxPanelHeight, panelPeekHeight, expansion]);
   // translateY's live value, kept current via addListener (fires synchronously on every change,
   // animated or direct) rather than read from stopAnimation's callback in onPanResponderGrant —
   // that callback is asynchronous, so a move event arriving right after grant (routine for a fast
@@ -115,6 +117,11 @@ export function PlaceDetailPanel({
     });
     return () => translateY.removeListener(id);
   }, [translateY]);
+  // The scrollable body's current scroll offset — read (not just written) by bodyPanResponder
+  // below to tell "pulling down past an already-top-scrolled list" (collapse the panel) apart from
+  // an ordinary scroll-down-then-up. A ref, not state: updates on every scroll frame, far too often
+  // to route through a re-render.
+  const scrollOffsetRef = useRef(0);
   const [notes, setNotes] = useState('');
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -202,64 +209,100 @@ export function PlaceDetailPanel({
     };
   }, [trimmedQuery, queryTooShort, addingPlace, selectedPlace]);
 
-  // dragStartY/maxPanelHeightRef/panelPeekHeightRef are only ever read/written inside these
-  // handlers, never during render — the rule can't see that the closure is deferred, hence the
-  // suppression.
+  // dragStartY/maxPanelHeightRef/panelPeekHeightRef/expansionRef are only ever read/written inside
+  // these handlers, never during render — the rule can't see that the closure is deferred, hence
+  // the suppression.
   // eslint-disable-next-line react-hooks/refs
-  const [panResponder] = useState(() =>
-    PanResponder.create({
-      onMoveShouldSetPanResponder: (_, gesture) =>
-        Math.abs(gesture.dy) > 4 && Math.abs(gesture.dy) > Math.abs(gesture.dx),
-      onPanResponderGrant: () => {
-        translateY.stopAnimation();
-        dragStartY.current = currentTranslateYRef.current;
-      },
-      onPanResponderMove: (_, gesture) => {
-        const maxHeight = maxPanelHeightRef.current;
-        const fullY = 0;
-        const peekY = maxHeight - panelPeekHeightRef.current;
-        translateY.setValue(clamp(dragStartY.current + gesture.dy, fullY, peekY));
-      },
-      onPanResponderRelease: (_, gesture) => {
-        const maxHeight = maxPanelHeightRef.current;
-        const points: [PanelExpansion, number][] = [
-          ['full', 0],
-          ['half', maxHeight - SCREEN_HEIGHT * DEFAULT_PANEL_HEIGHT_FRACTION],
-          ['peeked', maxHeight - panelPeekHeightRef.current],
-        ];
-        const finalY = clamp(dragStartY.current + gesture.dy, points[0][1], points[2][1]);
-        let nearestIndex = 0;
-        for (let i = 1; i < points.length; i++) {
-          if (Math.abs(points[i][1] - finalY) < Math.abs(points[nearestIndex][1] - finalY)) {
-            nearestIndex = i;
-          }
+  const [{ headerPanResponder, bodyPanResponder }] = useState(() => {
+    const onPanResponderGrant = () => {
+      translateY.stopAnimation();
+      dragStartY.current = currentTranslateYRef.current;
+    };
+    const onPanResponderMove = (_: unknown, gesture: { dy: number }) => {
+      const maxHeight = maxPanelHeightRef.current;
+      const fullY = 0;
+      const peekY = maxHeight - panelPeekHeightRef.current;
+      translateY.setValue(clamp(dragStartY.current + gesture.dy, fullY, peekY));
+    };
+    const onPanResponderRelease = (_: unknown, gesture: { dy: number; vy: number }) => {
+      const maxHeight = maxPanelHeightRef.current;
+      const points: [PanelExpansion, number][] = [
+        ['full', 0],
+        ['half', maxHeight - SCREEN_HEIGHT * DEFAULT_PANEL_HEIGHT_FRACTION],
+        ['peeked', maxHeight - panelPeekHeightRef.current],
+      ];
+      const finalY = clamp(dragStartY.current + gesture.dy, points[0][1], points[2][1]);
+      let nearestIndex = 0;
+      for (let i = 1; i < points.length; i++) {
+        if (Math.abs(points[i][1] - finalY) < Math.abs(points[nearestIndex][1] - finalY)) {
+          nearestIndex = i;
         }
-        // A decisive flick (past SNAP_VELOCITY_THRESHOLD) jumps one snap point further in that
-        // direction from wherever the release position would otherwise rest, rather than only
-        // ever landing exactly where the finger let go — e.g. flicking up from a half-open panel
-        // reaches full even mid-drag, matching a native bottom sheet's response to a swipe vs. a
-        // slow drag-and-release (which just rests at the nearest point, no nudge).
-        //
-        // gesture.vy is the *instantaneous* velocity right at release, not the swipe's overall
-        // direction — real touchscreens commonly report a tiny reversed blip in that exact instant
-        // as a finger lifts off, even mid-swipe while still clearly moving one way overall. Gating
-        // the nudge on gesture.dy's sign too (the swipe's net direction, not just its last instant)
-        // stops that blip from nudging the wrong way and briefly flickering the panel down before
-        // the next render's positioning effect fights it back up to where the swipe actually meant
-        // to land — confirmed via screen recording: full height, a snap down to roughly half, then
-        // a visible recovery back to full a few frames later.
-        let targetIndex = nearestIndex;
-        if (gesture.vy < -SNAP_VELOCITY_THRESHOLD && gesture.dy < 0) {
-          targetIndex = Math.max(0, nearestIndex - 1);
-        } else if (gesture.vy > SNAP_VELOCITY_THRESHOLD && gesture.dy > 0) {
-          targetIndex = Math.min(points.length - 1, nearestIndex + 1);
-        }
-        const [nextExpansion, nextY] = points[targetIndex];
-        setExpansion(nextExpansion);
-        Animated.spring(translateY, { ...SPRING_CONFIG, toValue: nextY }).start();
-      },
-    })
-  );
+      }
+      // A decisive flick (past SNAP_VELOCITY_THRESHOLD) jumps one snap point further in that
+      // direction from wherever the release position would otherwise rest, rather than only
+      // ever landing exactly where the finger let go — e.g. flicking up from a half-open panel
+      // reaches full even mid-drag, matching a native bottom sheet's response to a swipe vs. a
+      // slow drag-and-release (which just rests at the nearest point, no nudge).
+      //
+      // gesture.vy is the *instantaneous* velocity right at release, not the swipe's overall
+      // direction — real touchscreens commonly report a tiny reversed blip in that exact instant
+      // as a finger lifts off, even mid-swipe while still clearly moving one way overall. Gating
+      // the nudge on gesture.dy's sign too (the swipe's net direction, not just its last instant)
+      // stops that blip from nudging the wrong way and briefly flickering the panel down before
+      // the next render's positioning effect fights it back up to where the swipe actually meant
+      // to land — confirmed via screen recording: full height, a snap down to roughly half, then
+      // a visible recovery back to full a few frames later.
+      let targetIndex = nearestIndex;
+      if (gesture.vy < -SNAP_VELOCITY_THRESHOLD && gesture.dy < 0) {
+        targetIndex = Math.max(0, nearestIndex - 1);
+      } else if (gesture.vy > SNAP_VELOCITY_THRESHOLD && gesture.dy > 0) {
+        targetIndex = Math.min(points.length - 1, nearestIndex + 1);
+      }
+      const [nextExpansion, nextY] = points[targetIndex];
+      setExpansion(nextExpansion);
+      Animated.spring(translateY, { ...SPRING_CONFIG, toValue: nextY }).start();
+    };
+    const isVerticalDrag = (gesture: { dy: number; dx: number }) =>
+      Math.abs(gesture.dy) > 4 && Math.abs(gesture.dy) > Math.abs(gesture.dx);
+    // At full height, a downward body drag should only claim the gesture (collapsing the panel)
+    // when the list is already scrolled to its top — otherwise it's an ordinary scroll gesture and
+    // must be left to ScrollView. scrollOffsetRef is read fresh here for the same reason the other
+    // refs are: this closure is created once, so any render-scope value would go stale.
+    const shouldClaimBodyDrag = (gesture: { dy: number; dx: number }) => {
+      if (!isVerticalDrag(gesture)) return false;
+      if (expansionRef.current === 'half') return true;
+      return expansionRef.current === 'full' && gesture.dy > 0 && scrollOffsetRef.current <= 0;
+    };
+
+    return {
+      // The header always drags, in every state — the deliberate "grab handle" for this panel.
+      headerPanResponder: PanResponder.create({
+        onMoveShouldSetPanResponder: (_, gesture) => isVerticalDrag(gesture),
+        onPanResponderGrant,
+        onPanResponderMove,
+        onPanResponderRelease,
+      }),
+      // The scrollable body drags in two cases: any vertical drag at half height (see
+      // shouldClaimBodyDrag's own comment — half's content is a short, rarely-scrolled preview,
+      // so claiming here instead of leaving it to ScrollView means swiping up from anywhere on the
+      // panel, not just the header, reaches full height), and a downward drag at full height
+      // specifically once already scrolled to the top (pulling further down past the top of a
+      // fully-scrolled list reads as "collapse the panel," the same gesture bottom sheets like
+      // Apple Maps use — anywhere else in the scrolled content it's still an ordinary scroll).
+      // Both onMoveShouldSetPanResponder (bubble phase) and its Capture counterpart claim
+      // identically: capture normally wins the race against ScrollView's own native scroll
+      // responder for the very first move past the top edge, but isn't guaranteed to on every
+      // platform/RN version, so the bubble-phase handler is a second chance at the same claim
+      // rather than dead code.
+      bodyPanResponder: PanResponder.create({
+        onMoveShouldSetPanResponderCapture: (_, gesture) => shouldClaimBodyDrag(gesture),
+        onMoveShouldSetPanResponder: (_, gesture) => shouldClaimBodyDrag(gesture),
+        onPanResponderGrant,
+        onPanResponderMove,
+        onPanResponderRelease,
+      }),
+    };
+  });
 
   const handleOpenMaps = () => {
     if (!selectedSavedPlace) return;
@@ -311,7 +354,7 @@ export function PlaceDetailPanel({
       pointerEvents={visible ? 'auto' : 'none'}
       style={[styles.panel, { height: maxPanelHeight, transform: [{ translateY }] }]}
     >
-      <View {...panResponder.panHandlers}>
+      <View {...headerPanResponder.panHandlers}>
         <View style={styles.headerRow}>
           {selectedSavedPlace ? (
             <Text style={styles.headerEmoji}>{emojiForPlaceId(selectedSavedPlace.id)}</Text>
@@ -320,7 +363,28 @@ export function PlaceDetailPanel({
         </View>
       </View>
 
-      <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+      <ScrollView
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+        // ScrollView's native scroll responder claims a touch on its own, independently of
+        // bodyPanResponder's JS-level claim above — the two competing for the same touch is what
+        // read as "bouncy" (the list visibly scrolling on its own while the panel was also being
+        // resized). Disabling scroll for the same state bodyPanResponder is active in removes the
+        // competition entirely, rather than trying to out-negotiate it.
+        scrollEnabled={expansion !== 'half'}
+        // Even with onMoveShouldSetPanResponderCapture claiming the pull-down-at-top gesture
+        // above, a JS PanResponder can't always fully preempt the ScrollView's own native gesture
+        // recognizer before it starts reacting — there's inherent latency in the JS/native
+        // round-trip, confirmed by this still showing a brief rubber-band on-device even with the
+        // capture claim in place. Turning off the elastic overscroll effect itself removes what
+        // there is to see, regardless of which side technically wins that race.
+        bounces={false}
+        onScroll={(e) => {
+          scrollOffsetRef.current = e.nativeEvent.contentOffset.y;
+        }}
+        scrollEventThrottle={16}
+        {...bodyPanResponder.panHandlers}
+      >
         {addingPlace ? (
           <>
             <TextInput
