@@ -20,7 +20,14 @@ import { emojiForPlaceId } from '../lib/placeEmoji';
 import { SavedPlace } from '../types/place';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
-export const PANEL_PEEK_HEIGHT = SCREEN_HEIGHT / 3;
+// The peeked panel's visible strip is sized to end just above the add-place FAB (HomeScreen.tsx's
+// styles.addButton: bottom: insets.bottom + spacing.md, 56x56) rather than extending underneath
+// it — computed from that same footprint plus a little breathing room, not a fixed fraction of
+// the screen. No direct link to HomeScreen's own styles (nothing to import — it's a sibling
+// component's layout, not a shared constant), so if the FAB's size or position ever changes there,
+// this needs a matching update.
+const FAB_SIZE = 56;
+const FAB_BOTTOM_GAP = spacing.md;
 // The panel's default open height (a pin tap, or the welcome screen) — a glanceable partial
 // sheet, not full-screen. Add-place mode is the exception (always opens straight to 'full', see
 // below): it's an active search-and-pick task that benefits from the extra room, not a summary.
@@ -77,6 +84,7 @@ export function PlaceDetailPanel({
   // than a separate, unanimated snap.
   const maxPanelHeight = SCREEN_HEIGHT - insets.top;
   const defaultVisibleHeight = SCREEN_HEIGHT * DEFAULT_PANEL_HEIGHT_FRACTION;
+  const panelPeekHeight = insets.bottom + FAB_BOTTOM_GAP + FAB_SIZE + FAB_BOTTOM_GAP;
   const [translateY] = useState(() => new Animated.Value(maxPanelHeight));
   const [expansion, setExpansion] = useState<PanelExpansion>('half');
   const dragStartY = useRef(0);
@@ -86,9 +94,11 @@ export function PlaceDetailPanel({
   // links), same reason panelHeightRef used to exist here before height became a fixed constant
   // instead of something measured via onLayout.
   const maxPanelHeightRef = useRef(maxPanelHeight);
+  const panelPeekHeightRef = useRef(panelPeekHeight);
   useEffect(() => {
     maxPanelHeightRef.current = maxPanelHeight;
-  }, [maxPanelHeight]);
+    panelPeekHeightRef.current = panelPeekHeight;
+  }, [maxPanelHeight, panelPeekHeight]);
   // translateY's live value, kept current via addListener (fires synchronously on every change,
   // animated or direct) rather than read from stopAnimation's callback in onPanResponderGrant —
   // that callback is asynchronous, so a move event arriving right after grant (routine for a fast
@@ -151,7 +161,7 @@ export function PlaceDetailPanel({
         ? maxPanelHeight
         : expansion === 'half'
           ? defaultVisibleHeight
-          : PANEL_PEEK_HEIGHT;
+          : panelPeekHeight;
     Animated.spring(translateY, {
       ...SPRING_CONFIG,
       toValue: translateYForVisibleHeight(targetVisibleHeight),
@@ -160,7 +170,7 @@ export function PlaceDetailPanel({
     // maxPanelHeight, which is already listed — adding the function itself would just make the
     // effect re-run on every render for no behavioral difference.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, expansion, defaultVisibleHeight, maxPanelHeight, translateY]);
+  }, [visible, expansion, defaultVisibleHeight, panelPeekHeight, maxPanelHeight, translateY]);
 
   const trimmedQuery = debouncedQuery.trim();
   const queryTooShort = trimmedQuery.length < MIN_QUERY_LENGTH;
@@ -192,8 +202,9 @@ export function PlaceDetailPanel({
     };
   }, [trimmedQuery, queryTooShort, addingPlace, selectedPlace]);
 
-  // dragStartY/maxPanelHeightRef are only ever read/written inside these handlers, never during
-  // render — the rule can't see that the closure is deferred, hence the suppression.
+  // dragStartY/maxPanelHeightRef/panelPeekHeightRef are only ever read/written inside these
+  // handlers, never during render — the rule can't see that the closure is deferred, hence the
+  // suppression.
   // eslint-disable-next-line react-hooks/refs
   const [panResponder] = useState(() =>
     PanResponder.create({
@@ -206,7 +217,7 @@ export function PlaceDetailPanel({
       onPanResponderMove: (_, gesture) => {
         const maxHeight = maxPanelHeightRef.current;
         const fullY = 0;
-        const peekY = maxHeight - PANEL_PEEK_HEIGHT;
+        const peekY = maxHeight - panelPeekHeightRef.current;
         translateY.setValue(clamp(dragStartY.current + gesture.dy, fullY, peekY));
       },
       onPanResponderRelease: (_, gesture) => {
@@ -214,7 +225,7 @@ export function PlaceDetailPanel({
         const points: [PanelExpansion, number][] = [
           ['full', 0],
           ['half', maxHeight - SCREEN_HEIGHT * DEFAULT_PANEL_HEIGHT_FRACTION],
-          ['peeked', maxHeight - PANEL_PEEK_HEIGHT],
+          ['peeked', maxHeight - panelPeekHeightRef.current],
         ];
         const finalY = clamp(dragStartY.current + gesture.dy, points[0][1], points[2][1]);
         let nearestIndex = 0;
