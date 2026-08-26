@@ -14,7 +14,7 @@ the globe to see everything you've saved so far.
   a 3-tier Natural Earth country/land dataset that swaps in more detail as you zoom in
 
 This repo is a **pnpm workspace monorepo**: the app lives in `apps/places`, with auth and UI
-primitives factored into `packages/*` so future apps can share them. `experiments/` holds
+primitives factored into `packages/*` so future apps can share them. `prototypes/` holds
 standalone prototypes and archived earlier work — see below.
 
 ## Setup
@@ -68,7 +68,7 @@ packages/
   auth/                        # @ley/auth: AuthProvider/useAuth + Supabase client factory
   ui/                          # @ley/ui: theme tokens, useDebouncedValue
   config/                      # @ley/config: shared ESLint flat config
-experiments/                   # standalone prototypes + archived earlier work, not part of the app
+prototypes/                     # standalone prototypes + archived earlier work, not part of the app
 tsconfig.base.json              # shared TypeScript compiler options, extended by every app/package
 pnpm-workspace.yaml
 ```
@@ -87,11 +87,11 @@ scripts/build-globe-html.mjs   # bundles the above + country/land data into src/
 supabase/migrations/           # SQL schema + RLS policies
 ```
 
-## `experiments/`
+## `prototypes/`
 
 Standalone spaces for trying things out without touching the working app. Each has its own README.
 
-- `map-prototypes/` — browser-based globe/map rendering experiments (data pipelines, tiling
+- `maps/` — browser-based globe/map rendering experiments (data pipelines, tiling
   strategies) that informed `apps/places`'s current globe renderer.
 - `astrocartography/` — an earlier, complete app: a birth-chart globe showing where each planet was
   rising, setting, culminating, or at its lowest point at the moment you were born. Archived here

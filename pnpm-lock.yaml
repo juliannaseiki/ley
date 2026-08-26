@@ -79,7 +79,69 @@ importers:
         specifier: ~6.0.3
         version: 6.0.3
 
-  experiments/astrocartography:
+  packages/auth:
+    dependencies:
+      '@react-native-async-storage/async-storage':
+        specifier: ^3.1.1
+        version: 3.1.1(react-native@0.86.2(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3)
+      '@supabase/supabase-js':
+        specifier: ^2.111.0
+        version: 2.112.3
+      react:
+        specifier: 19.2.3
+        version: 19.2.3
+      react-native:
+        specifier: 0.86.2
+        version: 0.86.2(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.3)(supports-color@8.1.1)
+      react-native-url-polyfill:
+        specifier: ^4.0.0
+        version: 4.0.0(react-native@0.86.2(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.3)(supports-color@8.1.1))
+    devDependencies:
+      '@ley/config':
+        specifier: workspace:*
+        version: link:../config
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.1
+      '@types/react':
+        specifier: ~19.2.2
+        version: 19.2.18
+      typescript:
+        specifier: ~6.0.3
+        version: 6.0.3
+
+  packages/config:
+    dependencies:
+      eslint-config-expo:
+        specifier: ^57.0.1
+        version: 57.0.1(eslint@9.39.5(supports-color@8.1.1))(supports-color@8.1.1)(typescript@6.0.3)
+
+  packages/ui:
+    dependencies:
+      expo-linear-gradient:
+        specifier: ^57.0.1
+        version: 57.0.1(expo@57.0.13)(react-native@0.86.2(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3)
+      react:
+        specifier: 19.2.3
+        version: 19.2.3
+      react-native:
+        specifier: 0.86.2
+        version: 0.86.2(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.3)(supports-color@8.1.1)
+      react-native-safe-area-context:
+        specifier: ^5.8.0
+        version: 5.9.0(react-native@0.86.2(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3)
+    devDependencies:
+      '@ley/config':
+        specifier: workspace:*
+        version: link:../config
+      '@types/react':
+        specifier: ~19.2.2
+        version: 19.2.18
+      typescript:
+        specifier: ~6.0.3
+        version: 6.0.3
+
+  prototypes/astrocartography:
     dependencies:
       '@expo-google-fonts/fraunces':
         specifier: ^0.4.1
@@ -167,7 +229,7 @@ importers:
         specifier: ~6.0.3
         version: 6.0.3
 
-  experiments/map-prototypes/natural-earth-tiers:
+  prototypes/maps/natural-earth-tiers:
     dependencies:
       d3-geo:
         specifier: ^3.1.1
@@ -180,7 +242,7 @@ importers:
         specifier: ^0.28.1
         version: 0.28.2
 
-  experiments/map-prototypes/two-tier-mapshaper:
+  prototypes/maps/two-tier-mapshaper:
     dependencies:
       d3-geo:
         specifier: ^3.1.1
@@ -192,68 +254,6 @@ importers:
       esbuild:
         specifier: ^0.28.1
         version: 0.28.2
-
-  packages/auth:
-    dependencies:
-      '@react-native-async-storage/async-storage':
-        specifier: ^3.1.1
-        version: 3.1.1(react-native@0.86.2(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3)
-      '@supabase/supabase-js':
-        specifier: ^2.111.0
-        version: 2.112.3
-      react:
-        specifier: 19.2.3
-        version: 19.2.3
-      react-native:
-        specifier: 0.86.2
-        version: 0.86.2(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.3)(supports-color@8.1.1)
-      react-native-url-polyfill:
-        specifier: ^4.0.0
-        version: 4.0.0(react-native@0.86.2(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.3)(supports-color@8.1.1))
-    devDependencies:
-      '@ley/config':
-        specifier: workspace:*
-        version: link:../config
-      '@types/node':
-        specifier: ^22.0.0
-        version: 22.20.1
-      '@types/react':
-        specifier: ~19.2.2
-        version: 19.2.18
-      typescript:
-        specifier: ~6.0.3
-        version: 6.0.3
-
-  packages/config:
-    dependencies:
-      eslint-config-expo:
-        specifier: ^57.0.1
-        version: 57.0.1(eslint@9.39.5(supports-color@8.1.1))(supports-color@8.1.1)(typescript@6.0.3)
-
-  packages/ui:
-    dependencies:
-      expo-linear-gradient:
-        specifier: ^57.0.1
-        version: 57.0.1(expo@57.0.13)(react-native@0.86.2(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3)
-      react:
-        specifier: 19.2.3
-        version: 19.2.3
-      react-native:
-        specifier: 0.86.2
-        version: 0.86.2(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.3)(supports-color@8.1.1)
-      react-native-safe-area-context:
-        specifier: ^5.8.0
-        version: 5.9.0(react-native@0.86.2(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3)
-    devDependencies:
-      '@ley/config':
-        specifier: workspace:*
-        version: link:../config
-      '@types/react':
-        specifier: ~19.2.2
-        version: 19.2.18
-      typescript:
-        specifier: ~6.0.3
-        version: 6.0.3
 
 packages:
 
