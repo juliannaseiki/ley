@@ -4,9 +4,9 @@ import { selectCityLabels, CITY_RETAIN_HYSTERESIS, CITY_BASE_MIN_ZOOM } from './
 import { createLabelStateStore, applySelection, dropStaleByZoom, advance as advanceLabelState } from './city-labels/stateMachine.js';
 import { drawCityLabels, cityLabelFont } from './city-labels/render.js';
 
-// COUNTRY_TIERS, REGION_BORDER_ARCS, REGION_BORDER_BBOXES, REGION_LABELS, US_STATE_LABELS,
-// CITIES, and THEME are injected as globals by the HTML wrapper at build time.
-/* global COUNTRY_TIERS, REGION_BORDER_ARCS, REGION_BORDER_BBOXES, REGION_LABELS, US_STATE_LABELS, CITIES, THEME */
+// COUNTRY_TIERS, LAKES, REGION_BORDER_ARCS, REGION_BORDER_BBOXES, REGION_LABELS,
+// US_STATE_LABELS, CITIES, and THEME are injected as globals by the HTML wrapper at build time.
+/* global COUNTRY_TIERS, LAKES, REGION_BORDER_ARCS, REGION_BORDER_BBOXES, REGION_LABELS, US_STATE_LABELS, CITIES, THEME */
 
 // Temporary flag — region labels are getting a hand-drawn redesign, so they're switched off here
 // rather than removed: the curve-fitting and recompute logic underneath is all still intact and
@@ -123,7 +123,7 @@ const MAX_ZOOM = 1000;
 // threshold.
 const PINCH_ZOOM_POWER = 1.8;
 // Country land/border data switches between three Natural Earth resolutions by zoom — see
-// countryTierForZoom below and COUNTRY_TIERS (injected at build time from
+// tierScaleForZoom below and COUNTRY_TIERS (injected at build time from
 // scripts/data/countries-{110m,50m,10m}.json — see build-globe-html.mjs). A hard cutoff rather
 // than a cross-fade: unlike the old fixed-resolution setup (which needed a slow fade to hide a
 // large jump between one coarse and one detailed simplification of the same source), adjacent
@@ -133,11 +133,21 @@ const PINCH_ZOOM_POWER = 1.8;
 // just a Metro refresh).
 const COUNTRY_TIER_50M_MIN_ZOOM = MIN_ZOOM;
 const COUNTRY_TIER_10M_MIN_ZOOM = 12;
-function countryTierForZoom(z) {
-  if (z < COUNTRY_TIER_50M_MIN_ZOOM) return COUNTRY_TIERS['110m'];
-  if (z < COUNTRY_TIER_10M_MIN_ZOOM) return COUNTRY_TIERS['50m'];
-  return COUNTRY_TIERS['10m'];
+// Returns the scale key rather than resolving straight into COUNTRY_TIERS — the border/region
+// layers below switch resolution at these exact same breakpoints, so they all share one selector
+// instead of duplicating the cutoffs.
+function tierScaleForZoom(z) {
+  if (z < COUNTRY_TIER_50M_MIN_ZOOM) return '110m';
+  if (z < COUNTRY_TIER_10M_MIN_ZOOM) return '50m';
+  return '10m';
 }
+// Lakes reveal deeper than COUNTRY_TIER_10M_MIN_ZOOM on purpose, not at the same breakpoint: right
+// at zoom 12, visibleCapRadiusDeg() (the per-piece bbox-cull radius) is still wide (~12° at a
+// typical phone screen) — wide enough that a lot of lakes still pass the cull at once, stacking on
+// top of the 10m country/border tier's own already-heavy first frame and reading as a slowdown
+// right at that transition. By zoom 16 the cull radius has tightened enough (~9°) that lakes cost
+// meaningfully less per frame regardless of which region is on screen.
+const LAKE_MIN_ZOOM = 16;
 // State/province borders finish fading in by this zoom — not pushed out deep like land's, above.
 const STATE_BORDER_MIN_ZOOM = 3;
 // State borders and their abbreviation labels fade in together over this same window, reaching
@@ -419,7 +429,7 @@ function renderInner() {
   // Land — flat white fill (THEME.land), separating it from the now-tinted ocean rather than
   // leaving it unfilled to just show ocean color through the gap, for the most minimal version of
   // the map. countryTier resolves to whichever of the three Natural Earth resolutions
-  // (110m/50m/10m) the current zoom calls for (see countryTierForZoom above) — a hard switch, not
+  // (110m/50m/10m) the current zoom calls for (see tierScaleForZoom above) — a hard switch, not
   // a fade, reused below for the country border layer too. Bbox-culled the same as every other
   // per-piece layer.
   //
@@ -435,7 +445,8 @@ function renderInner() {
   // bounded by that much smaller visible set and is worth paying for the visual quality — same
   // reasoning the old coarse (plain path)/detail (smoothPath) split used, just keyed off whether
   // culling is doing anything this frame instead of a fixed always-on/always-detailed split.
-  const countryTier = countryTierForZoom(zoom);
+  const tierScale = tierScaleForZoom(zoom);
+  const countryTier = COUNTRY_TIERS[tierScale];
   const smoothLandThisFrame = capRadiusDeg < 90;
   const landPath = smoothLandThisFrame ? smoothPath : path;
   ctx.beginPath();
@@ -452,6 +463,31 @@ function renderInner() {
   ctx.lineWidth = 0.8;
   ctx.strokeStyle = THEME.landStroke;
   ctx.stroke();
+
+  // Lakes — only drawn past LAKE_MIN_ZOOM (see its definition above for why that's deeper than
+  // COUNTRY_TIER_10M_MIN_ZOOM rather than the same breakpoint). Tried also showing the (coarser)
+  // largest-lakes set at 110m/50m and it read as noise at that zoom-out, even for the biggest lakes
+  // on Earth — small enough on screen that a filled/outlined shape looked like stray specks rather
+  // than real geography. Filled with the same ocean gradient as the sphere fill above (rather than
+  // a separate flat land/white color) so a lake reads as one continuous idea of "water" instead of
+  // a similar-but-not-quite-identical gap in the land; outlined in THEME.lakeStroke (a light blue,
+  // a shade darker than the ocean fill) rather than landStroke's gray, so the shore reads as
+  // "water's edge" and not another gray map line. Same per-piece bbox-cull + cull-driven-smoothing
+  // approach as every other detail layer.
+  if (zoom >= LAKE_MIN_ZOOM) {
+    ctx.beginPath();
+    for (let i = 0; i < LAKES.pieces.length; i++) {
+      if (cullByBbox(LAKES.bboxes[i], capRadiusDeg)) {
+        landPath({ type: 'Polygon', coordinates: LAKES.pieces[i] });
+      }
+    }
+    if (smoothLandThisFrame) smoothPathContext.flush();
+    ctx.fillStyle = oceanGradient;
+    ctx.fill();
+    ctx.lineWidth = 0.4;
+    ctx.strokeStyle = THEME.lakeStroke;
+    ctx.stroke();
+  }
 
   // State/province borders for every country, drawn under country borders (so the country
   // outline reads as the more prominent line). Fades in over BORDER_DETAIL_FADE_START..END, the
