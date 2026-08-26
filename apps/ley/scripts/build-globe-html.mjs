@@ -85,7 +85,7 @@ function bboxOf(coordinates) {
 }
 
 // Land and country borders, three zoom-gated tiers (110m/50m/10m) instead of a single fixed
-// resolution — see webview-src/globe-entry.js's countryTierForZoom for the zoom breakpoints.
+// resolution — see webview-src/globe-entry.js's tierScaleForZoom for the zoom breakpoints.
 // Natural Earth's ne_{110m,50m,10m}_admin_0_countries.geojson (fetched from
 // https://github.com/nvkelso/natural-earth-vector, the same upstream repo already used for the
 // admin-1 data below) is both the land shape (via topojson-client's merge, unioning every country
@@ -196,6 +196,43 @@ const countryTiers = {
   '50m': loadCountryTier('50m'),
   '10m': loadCountryTier('10m'),
 };
+
+// Lakes — filled the same as the ocean (see THEME below and the fill in globe-entry.js) so they
+// read as water rather than a land-colored gap; Natural Earth's land/coastline layer above doesn't
+// carve them out as holes. Only the 10m tier is loaded: lakes are drawn exclusively past
+// LAKE_MIN_ZOOM in globe-entry.js — even the largest lakes read as noise at 110m/50m's zoom-out, so
+// there's no reason to ship the 110m/50m lake data (both tried, both rejected by eye) in the bundle
+// at all.
+//
+//   npx mapshaper -i ne_10m_lakes.geojson -simplify 15% keep-shapes -filter-fields name \
+//     -o format=topojson quantization=1e5 lakes-10m.json
+//
+// 15%, not the 35% used for the 10m country tier: measured directly (simulating the same bbox-cull
+// a real frame does, centered on lake-dense regions like the Canadian Shield/Finland), 35% still
+// left 7,600-10,200 points surviving culling in those regions at a typical LAKE_MIN_ZOOM frame —
+// real per-frame cost on top of the already-heavy 10m country/border tier, and the actual cause of
+// a user-reported slowdown once lakes reached the screen. 15% cuts that to roughly 2,200-3,200 in
+// the same regions (and the total dataset from 58,254 to 27,048 points) while keep-shapes protects
+// every lake from disappearing outright — this is a real quality-vs-speed tradeoff, not a free win,
+// so if lake outlines read as visibly too coarse up close, that's the dial to reconsider, the same
+// as it was for the country tiers' own simplify percentages.
+//
+// keep-shapes matters more here than it does for land/borders: lakes are small relative to the
+// whole dataset, and a plain simplify at this percentage collapses most of them to null geometry
+// entirely — dropped, not just less detailed — rather than just thinning their outlines.
+// merge() dissolves the tier's 1,355 individual lake polygons into one mergeable shape the same way
+// land does; lakes never touch each other, so the result is equivalent to -explode's per-lake
+// pieces without needing a separate explode step — reusing polygonPiecesOf and rewindGeometry
+// instead of a parallel lake-specific code path.
+function loadLakes() {
+  const topology = JSON.parse(fs.readFileSync(path.join(root, 'scripts/data/lakes-10m.json'), 'utf8'));
+  const object = topology.objects.ne_10m_lakes;
+  const geom = merge(topology, object.geometries);
+  rewindGeometry(geom);
+  return polygonPiecesOf(geom);
+}
+
+const lakes = loadLakes();
 
 // State/province-level boundaries for every country, not just the US. world-atlas/us-atlas only
 // bundle country-level and US-only data respectively; no npm package wraps Natural Earth's global
@@ -449,6 +486,7 @@ const theme = {
   oceanDeep: '#fbfdfe',
   land: '#FFFFFF',
   landStroke: '#A3A3A3',
+  lakeStroke: '#AFDCE9',
   countryBorder: '#A3A3A3',
   regionBorder: '#A3A3A3',
   globeOutline: '#A3A3A3',
@@ -496,6 +534,7 @@ const html = `<!DOCTYPE html>
 <canvas id="globe"></canvas>
 <script>
 window.COUNTRY_TIERS = ${embedAsJson(countryTiers)};
+window.LAKES = ${embedAsJson(lakes)};
 window.REGION_BORDER_ARCS = ${embedAsJson(regionBorderArcs)};
 window.REGION_BORDER_BBOXES = ${embedAsJson(regionBorderBboxes)};
 window.REGION_LABELS = ${embedAsJson(regionLabels)};
