@@ -33,7 +33,7 @@ It's a normal workspace package (`@ley/astrocartography`), so from the repo root
 2. Copy `.env.example` to `.env` in this directory and fill in your Supabase project's URL and anon
    key:
    ```
-   cp experiments/astrocartography/.env.example experiments/astrocartography/.env
+   cp prototypes/astrocartography/.env.example prototypes/astrocartography/.env
    ```
 3. `pnpm --filter @ley/astrocartography start`, then open in Expo Go, an iOS simulator, or an Android
    emulator.
