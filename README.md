@@ -13,7 +13,7 @@ the globe to see everything you've saved so far.
   renderer, with hand-rolled pointer gestures (drag to rotate, pinch to zoom, tap to select a pin) and
   a 3-tier Natural Earth country/land dataset that swaps in more detail as you zoom in
 
-This repo is a **pnpm workspace monorepo**: the app lives in `apps/places`, with auth and UI
+This repo is a **pnpm workspace monorepo**: the app lives in `apps/ley`, with auth and UI
 primitives factored into `packages/*` so future apps can share them. `prototypes/` holds
 standalone prototypes and archived earlier work — see below.
 
@@ -30,13 +30,13 @@ standalone prototypes and archived earlier work — see below.
    - In **Authentication → Providers**, email/password is enabled by default. Decide whether you want
      email confirmation on sign-up (Authentication → Settings) — the sign-up screen handles both cases,
      but for the fastest local iteration you may want to disable "Confirm email" while developing.
-   - In the **SQL editor**, run the migrations in `apps/places/supabase/migrations/` to create the
+   - In the **SQL editor**, run the migrations in `apps/ley/supabase/migrations/` to create the
      `saved_places` table and its row-level security policies.
-   - Copy `.env.example` to `.env` **inside `apps/places`** and fill in your Supabase project's URL/anon
+   - Copy `.env.example` to `.env` **inside `apps/ley`** and fill in your Supabase project's URL/anon
      key and a [Foursquare Places API](https://location.foursquare.com/places/) key:
 
      ```
-     cp apps/places/.env.example apps/places/.env
+     cp apps/ley/.env.example apps/ley/.env
      ```
 
 3. **Run the app**
@@ -52,7 +52,7 @@ standalone prototypes and archived earlier work — see below.
 The WebView's HTML/JS is pre-bundled (via esbuild) and simplified Natural Earth country/land data is
 inlined into `src/webview/globeHtml.ts` at build time, rather than loaded as a runtime asset — this
 sidesteps WebView local-asset path quirks on Android/iOS. If you change
-`apps/places/webview-src/globe-entry.js` or `apps/places/scripts/build-globe-html.mjs`, regenerate it
+`apps/ley/webview-src/globe-entry.js` or `apps/ley/scripts/build-globe-html.mjs`, regenerate it
 with:
 
 ```
@@ -63,7 +63,7 @@ pnpm build:globe
 
 ```
 apps/
-  places/                      # the app — see below
+  ley/                          # the app — see below
 packages/
   auth/                        # @ley/auth: AuthProvider/useAuth + Supabase client factory
   ui/                          # @ley/ui: theme tokens, useDebouncedValue
@@ -73,7 +73,7 @@ tsconfig.base.json              # shared TypeScript compiler options, extended b
 pnpm-workspace.yaml
 ```
 
-`apps/places`:
+`apps/ley`:
 
 ```
 App.tsx                        # font loading, providers, root
@@ -92,7 +92,7 @@ supabase/migrations/           # SQL schema + RLS policies
 Standalone spaces for trying things out without touching the working app. Each has its own README.
 
 - `maps/` — browser-based globe/map rendering experiments (data pipelines, tiling
-  strategies) that informed `apps/places`'s current globe renderer.
+  strategies) that informed `apps/ley`'s current globe renderer.
 - `astrocartography/` — an earlier, complete app: a birth-chart globe showing where each planet was
   rising, setting, culminating, or at its lowest point at the moment you were born. Archived here
   (not actively developed) rather than kept as a second live app; still a runnable Expo app of its

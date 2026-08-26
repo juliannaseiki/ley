@@ -1,7 +1,7 @@
 // Build step for this prototype: reads the three committed per-tier TopoJSON files (see
 // scripts/data/*.json and this directory's README for how they were generated), converts each to
-// plain GeoJSON pieces via topojson-client (same library/technique apps/places uses at its own
-// build time — see apps/places/scripts/build-globe-html.mjs), bundles the Canvas renderer with
+// plain GeoJSON pieces via topojson-client (same library/technique apps/ley uses at its own
+// build time — see apps/ley/scripts/build-globe-html.mjs), bundles the Canvas renderer with
 // esbuild, and writes one self-contained dist/index.html with the data inlined. Mirrors
 // build-globe-html.mjs's structure closely on purpose, so anything proven out here ports back
 // with minimal translation.
