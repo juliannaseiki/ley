@@ -271,7 +271,7 @@ export function PlaceDetailPanel({
         {addingPlace ? (
           <>
             <TextInput
-              placeholder="Search for a place…"
+              placeholder={'Search for a place, or "name, city"…'}
               placeholderTextColor={colors.inkSoft}
               value={searchQuery}
               onChangeText={handleSearchChange}
