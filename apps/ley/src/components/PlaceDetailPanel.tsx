@@ -21,11 +21,10 @@ import { SavedPlace } from '../types/place';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 export const PANEL_PEEK_HEIGHT = SCREEN_HEIGHT / 3;
-// Welcome/place-detail modes keep their usual partial-height sheet; the add-place search flow
-// opens as close to full-screen as the top safe area allows, since it's an active
-// search-and-pick task that benefits from the extra room rather than a glanceable summary.
+// The panel's default open height (a pin tap, or the welcome screen) — a glanceable partial
+// sheet, not full-screen. Add-place mode is the exception (always opens straight to 'full', see
+// below): it's an active search-and-pick task that benefits from the extra room, not a summary.
 const DEFAULT_PANEL_HEIGHT_FRACTION = 0.58;
-const SNAP_DRAG_THRESHOLD = 60;
 const SNAP_VELOCITY_THRESHOLD = 0.5;
 const SPRING_CONFIG = { damping: 18, mass: 0.9, stiffness: 160, useNativeDriver: true } as const;
 const SEARCH_DEBOUNCE_MS = 400;
@@ -39,6 +38,11 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 const SAVED_PLACE_COLUMNS = 'id, name, category, formatted_address, latitude, longitude';
+
+// Three resting heights the panel can snap to, ascending by how open the panel is — a plain
+// swipe-to-half default, with a further swipe up (or a fast flick, see onPanResponderRelease
+// below) reaching the same full height add-place mode opens to immediately.
+type PanelExpansion = 'peeked' | 'half' | 'full';
 
 type Props = {
   visible: boolean;
@@ -64,8 +68,8 @@ export function PlaceDetailPanel({
   const { session } = useAuth();
   const insets = useSafeAreaInsets();
   // The panel's own height never changes — it's always tall enough for its fullest state (the
-  // full-height add-place mode). Every other state (hidden/peeked/normal-expanded) is expressed
-  // purely as how far down translateY pushes this fixed-height sheet, not by resizing it. Height
+  // full-height add-place mode). Every other state (hidden/peeked/half/full) is expressed purely
+  // as how far down translateY pushes this fixed-height sheet, not by resizing it. Height
   // isn't animatable via the native driver the way transform is (and even a JS-driven height
   // animation looks janky with a ScrollView reflowing inside it mid-transition), so this is what
   // lets switching between add-place's full height and the normal partial height be one smooth
@@ -74,19 +78,17 @@ export function PlaceDetailPanel({
   const maxPanelHeight = SCREEN_HEIGHT - insets.top;
   const defaultVisibleHeight = SCREEN_HEIGHT * DEFAULT_PANEL_HEIGHT_FRACTION;
   const [translateY] = useState(() => new Animated.Value(maxPanelHeight));
-  const [expanded, setExpanded] = useState(true);
+  const [expansion, setExpansion] = useState<PanelExpansion>('half');
   const dragStartY = useRef(0);
-  // maxPanelHeight/addingPlace are read fresh inside the gesture handlers below (created once via
-  // useState, so a captured render-scope value would go stale there) — mirrored into refs, kept
-  // current after each render via effect (never mutated during render itself — see the ref docs
-  // this lint rule links), same reason panelHeightRef used to exist here before height became a
-  // fixed constant instead of something measured via onLayout.
+  // maxPanelHeight is read fresh inside the gesture handlers below (created once via useState, so
+  // a captured render-scope value would go stale there) — mirrored into a ref, kept current after
+  // each render via effect (never mutated during render itself — see the ref docs this lint rule
+  // links), same reason panelHeightRef used to exist here before height became a fixed constant
+  // instead of something measured via onLayout.
   const maxPanelHeightRef = useRef(maxPanelHeight);
-  const addingPlaceRef = useRef(addingPlace);
   useEffect(() => {
     maxPanelHeightRef.current = maxPanelHeight;
-    addingPlaceRef.current = addingPlace;
-  }, [maxPanelHeight, addingPlace]);
+  }, [maxPanelHeight]);
   const [notes, setNotes] = useState('');
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -100,25 +102,25 @@ export function PlaceDetailPanel({
 
   // translateY needed to show exactly `visibleHeight` of the panel above the bottom of the screen.
   const translateYForVisibleHeight = (visibleHeight: number) => maxPanelHeight - visibleHeight;
-  // How much of the panel is visible when fully expanded depends on mode: the full fixed height
-  // in add-place mode, the usual partial height otherwise.
-  const expandedVisibleHeight = addingPlace ? maxPanelHeight : defaultVisibleHeight;
 
-  // Selecting a new saved place (a pin tap), or entering the add-place flow, should always
-  // re-open the panel fully, even if it was left peeked from before — adjusted during render
-  // (React's recommended pattern for state that depends on a prop change) rather than an effect,
-  // since setState-in-effect on every mount triggers a needless extra render.
+  // Selecting a new saved place (a pin tap) opens the panel to its default half height, same as
+  // the welcome screen — but only if it was left peeked from before; an already half- or
+  // fully-open panel stays where the user left it rather than snapping back down. Entering the
+  // add-place flow always jumps straight to full, since that's a dedicated full-screen task, not
+  // a summary. Adjusted during render (React's recommended pattern for state that depends on a
+  // prop change) rather than an effect, since setState-in-effect on every mount triggers a
+  // needless extra render.
   const [prevSelectedSavedPlace, setPrevSelectedSavedPlace] = useState(selectedSavedPlace);
   if (selectedSavedPlace !== prevSelectedSavedPlace) {
     setPrevSelectedSavedPlace(selectedSavedPlace);
-    if (selectedSavedPlace && !expanded) setExpanded(true);
+    if (selectedSavedPlace && expansion === 'peeked') setExpansion('half');
   }
 
   const [prevAddingPlace, setPrevAddingPlace] = useState(addingPlace);
   if (addingPlace !== prevAddingPlace) {
     setPrevAddingPlace(addingPlace);
     if (addingPlace) {
-      if (!expanded) setExpanded(true);
+      setExpansion('full');
       setSearchQuery('');
       setSearchResults([]);
       setSelectedPlace(null);
@@ -127,7 +129,13 @@ export function PlaceDetailPanel({
   }
 
   useEffect(() => {
-    const targetVisibleHeight = !visible ? 0 : expanded ? expandedVisibleHeight : PANEL_PEEK_HEIGHT;
+    const targetVisibleHeight = !visible
+      ? 0
+      : expansion === 'full'
+        ? maxPanelHeight
+        : expansion === 'half'
+          ? defaultVisibleHeight
+          : PANEL_PEEK_HEIGHT;
     Animated.spring(translateY, {
       ...SPRING_CONFIG,
       toValue: translateYForVisibleHeight(targetVisibleHeight),
@@ -136,7 +144,7 @@ export function PlaceDetailPanel({
     // maxPanelHeight, which is already listed — adding the function itself would just make the
     // effect re-run on every render for no behavioral difference.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, expanded, expandedVisibleHeight, maxPanelHeight, translateY]);
+  }, [visible, expansion, defaultVisibleHeight, maxPanelHeight, translateY]);
 
   const trimmedQuery = debouncedQuery.trim();
   const queryTooShort = trimmedQuery.length < MIN_QUERY_LENGTH;
@@ -168,8 +176,8 @@ export function PlaceDetailPanel({
     };
   }, [trimmedQuery, queryTooShort, addingPlace, selectedPlace]);
 
-  // dragStartY/maxPanelHeightRef/addingPlaceRef are only ever read/written inside these handlers,
-  // never during render — the rule can't see that the closure is deferred, hence the suppression.
+  // dragStartY/maxPanelHeightRef are only ever read/written inside these handlers, never during
+  // render — the rule can't see that the closure is deferred, hence the suppression.
   // eslint-disable-next-line react-hooks/refs
   const [panResponder] = useState(() =>
     PanResponder.create({
@@ -182,28 +190,37 @@ export function PlaceDetailPanel({
       },
       onPanResponderMove: (_, gesture) => {
         const maxHeight = maxPanelHeightRef.current;
-        const expandedY = maxHeight - (addingPlaceRef.current ? maxHeight : defaultVisibleHeight);
-        const peek = maxHeight - PANEL_PEEK_HEIGHT;
-        translateY.setValue(clamp(dragStartY.current + gesture.dy, expandedY, peek));
+        const fullY = 0;
+        const peekY = maxHeight - PANEL_PEEK_HEIGHT;
+        translateY.setValue(clamp(dragStartY.current + gesture.dy, fullY, peekY));
       },
       onPanResponderRelease: (_, gesture) => {
         const maxHeight = maxPanelHeightRef.current;
-        const expandedY = maxHeight - (addingPlaceRef.current ? maxHeight : defaultVisibleHeight);
-        const peek = maxHeight - PANEL_PEEK_HEIGHT;
-        let nextExpanded: boolean;
-        if (gesture.dy > SNAP_DRAG_THRESHOLD || gesture.vy > SNAP_VELOCITY_THRESHOLD) {
-          nextExpanded = false;
-        } else if (gesture.dy < -SNAP_DRAG_THRESHOLD || gesture.vy < -SNAP_VELOCITY_THRESHOLD) {
-          nextExpanded = true;
-        } else {
-          const finalY = clamp(dragStartY.current + gesture.dy, expandedY, peek);
-          nextExpanded = finalY < (expandedY + peek) / 2;
+        const points: [PanelExpansion, number][] = [
+          ['full', 0],
+          ['half', maxHeight - SCREEN_HEIGHT * DEFAULT_PANEL_HEIGHT_FRACTION],
+          ['peeked', maxHeight - PANEL_PEEK_HEIGHT],
+        ];
+        const finalY = clamp(dragStartY.current + gesture.dy, points[0][1], points[2][1]);
+        let nearestIndex = 0;
+        for (let i = 1; i < points.length; i++) {
+          if (Math.abs(points[i][1] - finalY) < Math.abs(points[nearestIndex][1] - finalY)) {
+            nearestIndex = i;
+          }
         }
-        setExpanded(nextExpanded);
-        Animated.spring(translateY, {
-          ...SPRING_CONFIG,
-          toValue: nextExpanded ? expandedY : peek,
-        }).start();
+        // A decisive flick (past SNAP_VELOCITY_THRESHOLD) jumps one snap point further in that
+        // direction from wherever the release position would otherwise rest, rather than only
+        // ever landing exactly where the finger let go — e.g. flicking up from a half-open panel
+        // reaches full even mid-drag, matching a native bottom sheet's response to a swipe vs. a
+        // slow drag-and-release (which just rests at the nearest point, no nudge).
+        let targetIndex = nearestIndex;
+        if (gesture.vy < -SNAP_VELOCITY_THRESHOLD) targetIndex = Math.max(0, nearestIndex - 1);
+        else if (gesture.vy > SNAP_VELOCITY_THRESHOLD) {
+          targetIndex = Math.min(points.length - 1, nearestIndex + 1);
+        }
+        const [nextExpansion, nextY] = points[targetIndex];
+        setExpansion(nextExpansion);
+        Animated.spring(translateY, { ...SPRING_CONFIG, toValue: nextY }).start();
       },
     })
   );
