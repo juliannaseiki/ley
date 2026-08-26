@@ -7,9 +7,9 @@
     "typescript": "~6.0.3"
   },
   "scripts": {
-    "dev": "pnpm --filter @ley/places start",
+    "dev": "pnpm --filter @ley/ley start",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
-    "build:globe": "pnpm --filter @ley/places build:globe"
+    "build:globe": "pnpm --filter @ley/ley build:globe"
   }
 }

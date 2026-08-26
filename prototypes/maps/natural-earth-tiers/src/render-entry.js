@@ -1,7 +1,7 @@
 // Canvas 2D orthographic-globe renderer for eyeballing the three-tier Natural Earth LOD setup.
 // Bundled by scripts/build.mjs into dist/index.html alongside the data (window.TIERS,
 // window.LOD_BREAKPOINTS) it reads. Deliberately standalone — no shared code with
-// apps/places/webview-src/globe-entry.js, since this is meant to be thrown away or hand-ported
+// apps/ley/webview-src/globe-entry.js, since this is meant to be thrown away or hand-ported
 // once the approach is validated, not maintained in parallel with the real renderer.
 import { geoOrthographic, geoPath, geoGraticule10 } from 'd3-geo';
 

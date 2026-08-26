@@ -1,14 +1,14 @@
 # Natural Earth tiers — LOD prototype
 
-Tests replacing `apps/places`'s current two-tier ad-hoc-simplified mapshaper setup with three
+Tests replacing `apps/ley`'s current two-tier ad-hoc-simplified mapshaper setup with three
 properly-tiered Natural Earth datasets (110m / 50m / 10m), switched by zoom level instead of a
-fixed always-coarse + culled-detail pair. Standalone — nothing here is wired into `apps/places`;
+fixed always-coarse + culled-detail pair. Standalone — nothing here is wired into `apps/ley`;
 see `../README.md`.
 
 ## Data
 
 Source: `nvkelso/natural-earth-vector`'s `geojson/` folder — the same upstream repo
-`apps/places` already uses for admin-1 state/province data — pulled directly rather than via the
+`apps/ley` already uses for admin-1 state/province data — pulled directly rather than via the
 archived `world-atlas` npm package (frozen at Natural Earth v4.1.0, read-only since March 2023):
 
 - `https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_110m_admin_0_countries.geojson`
@@ -25,16 +25,16 @@ npx mapshaper -i ne_<scale>_admin_0_countries.geojson -explode \
 ```
 
 No `-simplify` step — unlike the existing `countries-coarse.json`/`countries-detail.json` in
-`apps/places`, which apply an arbitrary simplification percentage to the 10m source, these are
+`apps/ley`, which apply an arbitrary simplification percentage to the 10m source, these are
 Natural Earth's own named-scale, pre-generalized files, so simplifying them further isn't needed.
 `-explode` is still applied for the same reason it is in the existing pipeline: a country made of
 disjoint pieces (e.g. Greece's islands) is one *feature* in the raw data, and without exploding it
 first, `mesh()`'s reference-equality adjacency check can't tell "two pieces of the same country
 touching" apart from "two different countries sharing a border" (`scripts/build.mjs` handles this
-with a name-based comparator instead, same as `apps/places/scripts/build-globe-html.mjs`).
+with a name-based comparator instead, same as `apps/ley/scripts/build-globe-html.mjs`).
 
 Raw downloaded `.geojson` is not committed (staged in the gitignored `.raw/`) — only the
-mapshaper output is, matching how `apps/places` handles its own source data.
+mapshaper output is, matching how `apps/ley` handles its own source data.
 
 ## Running
 
@@ -52,21 +52,21 @@ open dist/index.html
   (`window.LOD_BREAKPOINTS` in `scripts/build.mjs`, live-tunable via the two sliders in the page's
   HUD — drag them and watch the tier label change without needing a rebuild). These are a
   starting point, not a final answer; the HUD is there specifically so they can be eyeballed and
-  adjusted before hardcoding anything back into `apps/places`.
+  adjusted before hardcoding anything back into `apps/ley`.
 - **Line-weight hierarchy**: coastline/continent outlines at 0.8px, country borders at 0.4px
   (`src/render-entry.js`, `render()`).
 - **Tiny-feature dropping**: only applied at the 110m tier (zoom 1–4, where a stray uninhabited
   rock reads as a fleck of dirt rather than real geography) — same 0.75°-longest-bbox-dimension
-  cutoff as `TINY_ISLAND_MAX_DEG` in `apps/places/scripts/build-globe-html.mjs`. The 50m/10m tiers
+  cutoff as `TINY_ISLAND_MAX_DEG` in `apps/ley/scripts/build-globe-html.mjs`. The 50m/10m tiers
   are left unfiltered since they only ever draw once zoomed in past where that size is a
   legitimate, recognizable feature.
 
-## Porting back to `apps/places`
+## Porting back to `apps/ley`
 
 If this approach is validated: replace the two `-simplify`-based mapshaper commands and
-`countries-coarse.json`/`countries-detail.json` in `apps/places/scripts/data/` with these three
+`countries-coarse.json`/`countries-detail.json` in `apps/ley/scripts/data/` with these three
 tier files, adapt `loadCountries`/`polygonPiecesOf`/tiny-island logic in
-`apps/places/scripts/build-globe-html.mjs` to the three-tier shape (this prototype's
+`apps/ley/scripts/build-globe-html.mjs` to the three-tier shape (this prototype's
 `scripts/build.mjs` is a close analog), wire the zoom-driven tier selection and line weights into
-`apps/places/webview-src/globe-entry.js`, then `pnpm --filter @ley/places build:globe` and a full
+`apps/ley/webview-src/globe-entry.js`, then `pnpm --filter @ley/ley build:globe` and a full
 app relaunch (not just Metro fast-refresh) to pick it up.

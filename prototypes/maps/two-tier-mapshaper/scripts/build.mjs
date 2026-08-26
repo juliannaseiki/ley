@@ -1,9 +1,9 @@
-// Frozen snapshot of apps/places/scripts/build-globe-html.mjs, taken just before the app's globe
+// Frozen snapshot of apps/ley/scripts/build-globe-html.mjs, taken just before the app's globe
 // was switched to the natural-earth-tiers three-tier approach (see ../README.md). Same data
 // pipeline verbatim; the only change is the final step, which writes a self-contained
 // dist/index.html for standalone viewing instead of wrapping the HTML as a committed .ts export
 // for the RN WebView. If this needs to be restored, copy scripts/data/*.json and webview-src/*
-// back into apps/places and re-run its own build:globe.
+// back into apps/ley and re-run its own build:globe.
 import { build } from 'esbuild';
 import { feature, mesh, merge } from 'topojson-client';
 import { geoArea, geoCentroid } from 'd3-geo';
