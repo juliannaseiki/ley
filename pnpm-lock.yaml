@@ -15,7 +15,71 @@ importers:
         specifier: ~6.0.3
         version: 6.0.3
 
-  apps/astrocartography:
+  apps/places:
+    dependencies:
+      '@expo-google-fonts/fraunces':
+        specifier: ^0.4.1
+        version: 0.4.1
+      '@expo-google-fonts/inter':
+        specifier: ^0.4.2
+        version: 0.4.2
+      '@ley/auth':
+        specifier: workspace:*
+        version: link:../../packages/auth
+      '@ley/ui':
+        specifier: workspace:*
+        version: link:../../packages/ui
+      d3-geo:
+        specifier: ^3.1.1
+        version: 3.1.1
+      expo:
+        specifier: ~57.0.9
+        version: 57.0.13(@babel/core@7.29.7(supports-color@8.1.1))(@expo/dom-webview@57.0.1)(react-native-webview@16.0.0(react-native@0.86.2(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3))(react-native@0.86.2(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3)(supports-color@8.1.1)(typescript@6.0.3)
+      expo-font:
+        specifier: ^57.0.1
+        version: 57.0.1(expo@57.0.13)(react-native@0.86.2(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3)
+      expo-splash-screen:
+        specifier: ^57.0.5
+        version: 57.0.6(expo@57.0.13)(supports-color@8.1.1)(typescript@6.0.3)
+      expo-status-bar:
+        specifier: ~57.0.1
+        version: 57.0.1(expo@57.0.13)(react-native@0.86.2(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3)
+      react:
+        specifier: 19.2.3
+        version: 19.2.3
+      react-native:
+        specifier: 0.86.2
+        version: 0.86.2(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.3)(supports-color@8.1.1)
+      react-native-safe-area-context:
+        specifier: ^5.8.0
+        version: 5.9.0(react-native@0.86.2(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3)
+      react-native-webview:
+        specifier: ^16.0.0
+        version: 16.0.0(react-native@0.86.2(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3)
+      topojson-client:
+        specifier: ^3.1.0
+        version: 3.1.0
+    devDependencies:
+      '@ley/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@types/d3-geo':
+        specifier: ^3.1.1
+        version: 3.1.1
+      '@types/react':
+        specifier: ~19.2.2
+        version: 19.2.18
+      '@types/topojson-client':
+        specifier: ^3.1.5
+        version: 3.1.5
+      esbuild:
+        specifier: ^0.28.1
+        version: 0.28.2
+      typescript:
+        specifier: ~6.0.3
+        version: 6.0.3
+
+  experiments/astrocartography:
     dependencies:
       '@expo-google-fonts/fraunces':
         specifier: ^0.4.1
@@ -96,70 +160,6 @@ importers:
       '@types/tz-lookup':
         specifier: ^6.1.2
         version: 6.1.2
-      esbuild:
-        specifier: ^0.28.1
-        version: 0.28.2
-      typescript:
-        specifier: ~6.0.3
-        version: 6.0.3
-
-  apps/places:
-    dependencies:
-      '@expo-google-fonts/fraunces':
-        specifier: ^0.4.1
-        version: 0.4.1
-      '@expo-google-fonts/inter':
-        specifier: ^0.4.2
-        version: 0.4.2
-      '@ley/auth':
-        specifier: workspace:*
-        version: link:../../packages/auth
-      '@ley/ui':
-        specifier: workspace:*
-        version: link:../../packages/ui
-      d3-geo:
-        specifier: ^3.1.1
-        version: 3.1.1
-      expo:
-        specifier: ~57.0.9
-        version: 57.0.13(@babel/core@7.29.7(supports-color@8.1.1))(@expo/dom-webview@57.0.1)(react-native-webview@16.0.0(react-native@0.86.2(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3))(react-native@0.86.2(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3)(supports-color@8.1.1)(typescript@6.0.3)
-      expo-font:
-        specifier: ^57.0.1
-        version: 57.0.1(expo@57.0.13)(react-native@0.86.2(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3)
-      expo-splash-screen:
-        specifier: ^57.0.5
-        version: 57.0.6(expo@57.0.13)(supports-color@8.1.1)(typescript@6.0.3)
-      expo-status-bar:
-        specifier: ~57.0.1
-        version: 57.0.1(expo@57.0.13)(react-native@0.86.2(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3)
-      react:
-        specifier: 19.2.3
-        version: 19.2.3
-      react-native:
-        specifier: 0.86.2
-        version: 0.86.2(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.3)(supports-color@8.1.1)
-      react-native-safe-area-context:
-        specifier: ^5.8.0
-        version: 5.9.0(react-native@0.86.2(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3)
-      react-native-webview:
-        specifier: ^16.0.0
-        version: 16.0.0(react-native@0.86.2(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3)
-      topojson-client:
-        specifier: ^3.1.0
-        version: 3.1.0
-    devDependencies:
-      '@ley/config':
-        specifier: workspace:*
-        version: link:../../packages/config
-      '@types/d3-geo':
-        specifier: ^3.1.1
-        version: 3.1.1
-      '@types/react':
-        specifier: ~19.2.2
-        version: 19.2.18
-      '@types/topojson-client':
-        specifier: ^3.1.5
-        version: 3.1.5
       esbuild:
         specifier: ^0.28.1
         version: 0.28.2
@@ -1389,10 +1389,12 @@ packages:
   '@xmldom/xmldom@0.8.14':
     resolution: {integrity: sha512-T4EDRUBVZYRldYApjEJiU0e1stYWaRAX7CuSnKzrpwdZKo53zGV8/pqfzV6FfwNl9YThD2OumQYvqtvjvgG7aQ==}
     engines: {node: '>=10.0.0'}
+    deprecated: this version has critical issues, please update to the latest version
 
   '@xmldom/xmldom@0.9.11':
     resolution: {integrity: sha512-tW8bcK3hsG0/uqSnNz6TK4BkcuZSezoU7DlnYssILmZDktPnSHHuDJJFM0AJv+13gz2r0iGdrj6qqKeUnxXEDg==}
     engines: {node: '>=14.6'}
+    deprecated: this version has critical issues, please update to the latest version
 
   abort-controller@3.0.0:
     resolution: {integrity: sha512-h8lQ8tacZYnR3vNQTgibj+tODHI5/+l06Au2Pcriv/Gmet0eaj4TwWH41sO9wnHDiQsEj19q0drzdWdeAHtweg==}
