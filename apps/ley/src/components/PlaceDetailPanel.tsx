@@ -89,6 +89,22 @@ export function PlaceDetailPanel({
   useEffect(() => {
     maxPanelHeightRef.current = maxPanelHeight;
   }, [maxPanelHeight]);
+  // translateY's live value, kept current via addListener (fires synchronously on every change,
+  // animated or direct) rather than read from stopAnimation's callback in onPanResponderGrant —
+  // that callback is asynchronous, so a move event arriving right after grant (routine for a fast
+  // continuous drag) could read dragStartY before the callback ever ran, basing that frame's
+  // position on a stale prior value and producing a one-frame jump that self-corrects the instant
+  // the callback does fire. Confirmed via a 60fps screen recording: the panel visibly snapped to a
+  // wrong height for a single frame mid-drag, then immediately recovered. This ref has no such
+  // race — it's updated the same tick as every value change, so it's always current by the time
+  // onPanResponderGrant reads it.
+  const currentTranslateYRef = useRef(maxPanelHeight);
+  useEffect(() => {
+    const id = translateY.addListener(({ value }) => {
+      currentTranslateYRef.current = value;
+    });
+    return () => translateY.removeListener(id);
+  }, [translateY]);
   const [notes, setNotes] = useState('');
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -184,9 +200,8 @@ export function PlaceDetailPanel({
       onMoveShouldSetPanResponder: (_, gesture) =>
         Math.abs(gesture.dy) > 4 && Math.abs(gesture.dy) > Math.abs(gesture.dx),
       onPanResponderGrant: () => {
-        translateY.stopAnimation((value) => {
-          dragStartY.current = value;
-        });
+        translateY.stopAnimation();
+        dragStartY.current = currentTranslateYRef.current;
       },
       onPanResponderMove: (_, gesture) => {
         const maxHeight = maxPanelHeightRef.current;
@@ -213,9 +228,19 @@ export function PlaceDetailPanel({
         // ever landing exactly where the finger let go — e.g. flicking up from a half-open panel
         // reaches full even mid-drag, matching a native bottom sheet's response to a swipe vs. a
         // slow drag-and-release (which just rests at the nearest point, no nudge).
+        //
+        // gesture.vy is the *instantaneous* velocity right at release, not the swipe's overall
+        // direction — real touchscreens commonly report a tiny reversed blip in that exact instant
+        // as a finger lifts off, even mid-swipe while still clearly moving one way overall. Gating
+        // the nudge on gesture.dy's sign too (the swipe's net direction, not just its last instant)
+        // stops that blip from nudging the wrong way and briefly flickering the panel down before
+        // the next render's positioning effect fights it back up to where the swipe actually meant
+        // to land — confirmed via screen recording: full height, a snap down to roughly half, then
+        // a visible recovery back to full a few frames later.
         let targetIndex = nearestIndex;
-        if (gesture.vy < -SNAP_VELOCITY_THRESHOLD) targetIndex = Math.max(0, nearestIndex - 1);
-        else if (gesture.vy > SNAP_VELOCITY_THRESHOLD) {
+        if (gesture.vy < -SNAP_VELOCITY_THRESHOLD && gesture.dy < 0) {
+          targetIndex = Math.max(0, nearestIndex - 1);
+        } else if (gesture.vy > SNAP_VELOCITY_THRESHOLD && gesture.dy > 0) {
           targetIndex = Math.min(points.length - 1, nearestIndex + 1);
         }
         const [nextExpansion, nextY] = points[targetIndex];
