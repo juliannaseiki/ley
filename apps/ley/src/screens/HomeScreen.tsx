@@ -75,6 +75,11 @@ export function HomeScreen() {
     setAddingPlace(false);
   };
 
+  const handlePlaceDeleted = (placeId: string) => {
+    setSavedPlaces((prev) => prev.filter((place) => place.id !== placeId));
+    setSelectedSavedPlace(null);
+  };
+
   const handleBackToWelcome = () => setSelectedSavedPlace(null);
 
   const handleSelectSavedPlace = (place: SavedPlace) => {
@@ -124,6 +129,7 @@ export function HomeScreen() {
         savedPlacesLoading={savedPlacesLoading}
         savedPlacesError={savedPlacesError}
         onPlaceSaved={handlePlaceSaved}
+        onPlaceDeleted={handlePlaceDeleted}
         onBack={handleBackToWelcome}
         onSelectPlace={handleSelectSavedPlace}
       />
