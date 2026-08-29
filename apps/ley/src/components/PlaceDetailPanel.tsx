@@ -455,19 +455,12 @@ export function PlaceDetailPanel({
         ) : selectedSavedPlace ? (
           <>
             {selectedSavedPlace.category || selectedSavedPlace.formatted_address ? (
-              <Text style={styles.selectedPlaceSubtitle}>
+              <Text style={styles.selectedPlaceSubtitle} onPress={handleOpenMaps}>
                 {[selectedSavedPlace.category, selectedSavedPlace.formatted_address]
                   .filter(Boolean)
                   .join(' · ')}
               </Text>
             ) : null}
-
-            <Pressable
-              onPress={handleOpenMaps}
-              style={({ pressed }) => [styles.mapsButton, pressed && styles.mapsButtonPressed]}
-            >
-              <Text style={styles.mapsButtonLabel}>Open in Maps</Text>
-            </Pressable>
 
             <TextInput
               placeholder="Add a note about this place…"
