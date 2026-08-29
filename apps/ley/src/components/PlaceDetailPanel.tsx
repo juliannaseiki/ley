@@ -547,10 +547,6 @@ const styles = StyleSheet.create({
   headerButton: {
     width: 36,
     height: 36,
-    borderRadius: radii.pill,
-    backgroundColor: colors.white,
-    borderWidth: 1,
-    borderColor: colors.hairline,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -560,8 +556,8 @@ const styles = StyleSheet.create({
   },
   headerButtonIcon: {
     fontFamily: fonts.headingSemiBold,
-    fontSize: 18,
-    color: colors.ink,
+    fontSize: 21,
+    color: colors.inkFaint,
   },
   title: {
     flex: 1,
