@@ -77,6 +77,12 @@ export function HomeScreen() {
 
   const handleBackToWelcome = () => setSelectedSavedPlace(null);
 
+  const handleSelectSavedPlace = (place: SavedPlace) => {
+    setSelectedSavedPlace(place);
+    setAddingPlace(false);
+    setPanelVisible(true);
+  };
+
   // Edit view doesn't exist yet — see LEY-26.
   const handleEditPlace = () => {};
 
@@ -123,6 +129,7 @@ export function HomeScreen() {
         onPlaceSaved={handlePlaceSaved}
         onBack={handleBackToWelcome}
         onEditPlace={handleEditPlace}
+        onSelectPlace={handleSelectSavedPlace}
       />
 
       <Pressable
