@@ -3,6 +3,7 @@ export const colors = {
   background: '#FFFFFF',
   ink: '#28312C',
   inkSoft: '#5B655F',
+  inkFaint: '#b7b9b7',
   hairline: '#E6EBE7',
   skyBlue: '#AFDCE9',
   sageGreen: '#A9CFA3',
