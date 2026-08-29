@@ -4,6 +4,7 @@ import {
   Animated,
   Dimensions,
   Linking,
+  Modal,
   PanResponder,
   Pressable,
   ScrollView,
@@ -56,6 +57,7 @@ type Props = {
   savedPlacesLoading: boolean;
   savedPlacesError: string | null;
   onPlaceSaved: (place: SavedPlace) => void;
+  onPlaceDeleted: (placeId: string) => void;
   onBack: () => void;
   onSelectPlace: (place: SavedPlace) => void;
 };
@@ -69,6 +71,7 @@ export function PlaceDetailPanel({
   savedPlacesLoading,
   savedPlacesError,
   onPlaceSaved,
+  onPlaceDeleted,
   onBack,
   onSelectPlace,
 }: Props) {
@@ -124,6 +127,9 @@ export function PlaceDetailPanel({
   const scrollOffsetRef = useRef(0);
   const [notes, setNotes] = useState('');
   const [isEditing, setIsEditing] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<PlaceSearchResult[]>([]);
@@ -149,6 +155,8 @@ export function PlaceDetailPanel({
     setPrevSelectedSavedPlace(selectedSavedPlace);
     if (selectedSavedPlace && expansion === 'peeked') setExpansion('half');
     setIsEditing(false);
+    setConfirmingDelete(false);
+    setDeleteError(null);
   }
 
   const [prevAddingPlace, setPrevAddingPlace] = useState(addingPlace);
@@ -311,6 +319,20 @@ export function PlaceDetailPanel({
     Linking.openURL(
       `https://maps.apple.com/?ll=${selectedSavedPlace.latitude},${selectedSavedPlace.longitude}`
     );
+  };
+
+  const handleDeletePlace = async () => {
+    if (!selectedSavedPlace || deleting) return;
+    setDeleting(true);
+    setDeleteError(null);
+    const { error } = await supabase.from('saved_places').delete().eq('id', selectedSavedPlace.id);
+    setDeleting(false);
+    if (error) {
+      setDeleteError(error.message);
+      return;
+    }
+    setConfirmingDelete(false);
+    onPlaceDeleted(selectedSavedPlace.id);
   };
 
   const handleSearchChange = (text: string) => {
@@ -479,6 +501,21 @@ export function PlaceDetailPanel({
             ) : notes ? (
               <Text style={styles.notesInput}>{notes}</Text>
             ) : null}
+
+            {isEditing ? (
+              <Pressable
+                onPress={() => setConfirmingDelete(true)}
+                style={({ pressed }) => [
+                  styles.mapsButton,
+                  styles.deleteButton,
+                  pressed && styles.mapsButtonPressed,
+                ]}
+              >
+                <Text style={[styles.mapsButtonLabel, styles.deleteButtonLabel]}>
+                  Delete place
+                </Text>
+              </Pressable>
+            ) : null}
           </>
         ) : savedPlacesLoading ? (
           <ActivityIndicator color={colors.inkSoft} style={styles.searchStatus} />
@@ -505,6 +542,47 @@ export function PlaceDetailPanel({
           <Text style={styles.emptyState}>No saved places yet — tap the + button to add one.</Text>
         )}
       </ScrollView>
+
+      <Modal
+        visible={confirmingDelete}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setConfirmingDelete(false)}
+      >
+        <View style={styles.confirmBackdrop}>
+          <View style={styles.confirmCard}>
+            <Text style={styles.confirmMessage}>
+              Are you sure you want to remove {selectedSavedPlace?.name}?
+            </Text>
+            {deleteError ? <Text style={styles.searchError}>{deleteError}</Text> : null}
+            <View style={styles.confirmButtonRow}>
+              <Pressable
+                onPress={() => setConfirmingDelete(false)}
+                disabled={deleting}
+                style={({ pressed }) => [styles.confirmButton, pressed && styles.mapsButtonPressed]}
+              >
+                <Text style={styles.mapsButtonLabel}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={handleDeletePlace}
+                disabled={deleting}
+                style={({ pressed }) => [
+                  styles.confirmButton,
+                  styles.confirmDeleteButton,
+                  pressed && styles.mapsButtonPressed,
+                  deleting && styles.addPlaceButtonDisabled,
+                ]}
+              >
+                {deleting ? (
+                  <ActivityIndicator color={colors.error} />
+                ) : (
+                  <Text style={[styles.mapsButtonLabel, styles.deleteButtonLabel]}>Delete</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </Animated.View>
   );
 }
@@ -585,6 +663,51 @@ const styles = StyleSheet.create({
     fontFamily: fonts.bodySemiBold,
     fontSize: 16,
     color: colors.ink,
+  },
+  deleteButton: {
+    borderColor: colors.error,
+    marginTop: spacing.md,
+  },
+  deleteButtonLabel: {
+    color: colors.error,
+  },
+  confirmBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(40, 49, 44, 0.3)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: spacing.lg,
+  },
+  confirmCard: {
+    width: '100%',
+    backgroundColor: colors.white,
+    borderWidth: 1,
+    borderColor: colors.hairline,
+    borderRadius: radii.lg,
+    padding: spacing.lg,
+  },
+  confirmMessage: {
+    fontFamily: fonts.bodyMedium,
+    fontSize: 16,
+    color: colors.ink,
+    textAlign: 'center',
+    marginBottom: spacing.lg,
+  },
+  confirmButtonRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  confirmButton: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: colors.hairline,
+    borderRadius: radii.pill,
+    paddingVertical: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  confirmDeleteButton: {
+    borderColor: colors.error,
   },
   notesInput: {
     fontFamily: fonts.body,
