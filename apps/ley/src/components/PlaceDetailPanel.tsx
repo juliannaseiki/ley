@@ -61,6 +61,7 @@ type Props = {
   onPlaceSaved: (place: SavedPlace) => void;
   onBack: () => void;
   onEditPlace: () => void;
+  onSelectPlace: (place: SavedPlace) => void;
 };
 
 export function PlaceDetailPanel({
@@ -74,6 +75,7 @@ export function PlaceDetailPanel({
   onPlaceSaved,
   onBack,
   onEditPlace,
+  onSelectPlace,
 }: Props) {
   const { session } = useAuth();
   const insets = useSafeAreaInsets();
@@ -496,14 +498,18 @@ export function PlaceDetailPanel({
         ) : savedPlaces.length > 0 ? (
           <View style={styles.resultsList}>
             {savedPlaces.map((place) => (
-              <View key={place.id} style={styles.resultRow}>
+              <Pressable
+                key={place.id}
+                onPress={() => onSelectPlace(place)}
+                style={({ pressed }) => [styles.resultRow, pressed && styles.resultRowPressed]}
+              >
                 <Text style={styles.resultName}>{place.name}</Text>
                 {place.category || place.formatted_address ? (
                   <Text style={styles.resultAddress}>
                     {[place.category, place.formatted_address].filter(Boolean).join(' · ')}
                   </Text>
                 ) : null}
-              </View>
+              </Pressable>
             ))}
           </View>
         ) : (
