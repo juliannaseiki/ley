@@ -16,7 +16,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, fonts, radii, spacing, useDebouncedValue } from '@ley/ui';
 import { supabase, useAuth } from '@ley/auth';
 import { searchPlaces, PlaceSearchResult } from '../lib/foursquarePlaces';
-import { emojiForPlaceId } from '../lib/placeEmoji';
 import { SavedPlace } from '../types/place';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
@@ -356,9 +355,6 @@ export function PlaceDetailPanel({
     >
       <View {...headerPanResponder.panHandlers}>
         <View style={styles.headerRow}>
-          {selectedSavedPlace ? (
-            <Text style={styles.headerEmoji}>{emojiForPlaceId(selectedSavedPlace.id)}</Text>
-          ) : null}
           <Text style={styles.title}>{title}</Text>
         </View>
       </View>
@@ -525,12 +521,8 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   headerRow: {
+    marginTop: spacing.sm,
     marginBottom: spacing.md,
-  },
-  headerEmoji: {
-    fontSize: 32,
-    textAlign: 'center',
-    marginBottom: spacing.xs,
   },
   title: {
     fontFamily: fonts.headingSemiBold,
