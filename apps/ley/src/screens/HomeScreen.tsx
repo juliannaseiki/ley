@@ -83,9 +83,6 @@ export function HomeScreen() {
     setPanelVisible(true);
   };
 
-  // Edit view doesn't exist yet — see LEY-26.
-  const handleEditPlace = () => {};
-
   const email = session?.user?.email;
   const panelTitle = addingPlace
     ? 'Add a place'
@@ -128,7 +125,6 @@ export function HomeScreen() {
         savedPlacesError={savedPlacesError}
         onPlaceSaved={handlePlaceSaved}
         onBack={handleBackToWelcome}
-        onEditPlace={handleEditPlace}
         onSelectPlace={handleSelectSavedPlace}
       />
 

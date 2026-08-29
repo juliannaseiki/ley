@@ -57,7 +57,6 @@ type Props = {
   savedPlacesError: string | null;
   onPlaceSaved: (place: SavedPlace) => void;
   onBack: () => void;
-  onEditPlace: () => void;
   onSelectPlace: (place: SavedPlace) => void;
 };
 
@@ -71,7 +70,6 @@ export function PlaceDetailPanel({
   savedPlacesError,
   onPlaceSaved,
   onBack,
-  onEditPlace,
   onSelectPlace,
 }: Props) {
   const { session } = useAuth();
@@ -125,6 +123,7 @@ export function PlaceDetailPanel({
   // to route through a re-render.
   const scrollOffsetRef = useRef(0);
   const [notes, setNotes] = useState('');
+  const [isEditing, setIsEditing] = useState(false);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<PlaceSearchResult[]>([]);
@@ -149,6 +148,7 @@ export function PlaceDetailPanel({
   if (selectedSavedPlace !== prevSelectedSavedPlace) {
     setPrevSelectedSavedPlace(selectedSavedPlace);
     if (selectedSavedPlace && expansion === 'peeked') setExpansion('half');
+    setIsEditing(false);
   }
 
   const [prevAddingPlace, setPrevAddingPlace] = useState(addingPlace);
@@ -367,8 +367,12 @@ export function PlaceDetailPanel({
           )}
           <Text style={styles.title}>{title}</Text>
           {selectedSavedPlace ? (
-            <Pressable onPress={onEditPlace} style={styles.headerButton} hitSlop={8}>
-              <Text style={styles.headerButtonIcon}>✎</Text>
+            <Pressable
+              onPress={() => setIsEditing((prev) => !prev)}
+              style={styles.headerButton}
+              hitSlop={8}
+            >
+              <Text style={styles.headerButtonIcon}>{isEditing ? '✓' : '✎'}</Text>
             </Pressable>
           ) : (
             <View style={styles.headerButtonSpacer} />
@@ -462,14 +466,19 @@ export function PlaceDetailPanel({
               </Text>
             ) : null}
 
-            <TextInput
-              placeholder="Add a note about this place…"
-              placeholderTextColor={colors.inkSoft}
-              value={notes}
-              onChangeText={setNotes}
-              multiline
-              style={styles.notesInput}
-            />
+            {isEditing ? (
+              <TextInput
+                placeholder="Add a note about this place…"
+                placeholderTextColor={colors.inkSoft}
+                value={notes}
+                onChangeText={setNotes}
+                multiline
+                autoFocus
+                style={styles.notesInput}
+              />
+            ) : notes ? (
+              <Text style={styles.notesInput}>{notes}</Text>
+            ) : null}
           </>
         ) : savedPlacesLoading ? (
           <ActivityIndicator color={colors.inkSoft} style={styles.searchStatus} />
