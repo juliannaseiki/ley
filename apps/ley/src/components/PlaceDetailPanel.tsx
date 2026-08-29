@@ -568,7 +568,7 @@ export function PlaceDetailPanel({
                 disabled={deleting}
                 style={({ pressed }) => [
                   styles.confirmButton,
-                  styles.deleteButton,
+                  styles.confirmDeleteButton,
                   pressed && styles.mapsButtonPressed,
                   deleting && styles.addPlaceButtonDisabled,
                 ]}
@@ -705,6 +705,9 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  confirmDeleteButton: {
+    borderColor: colors.error,
   },
   notesInput: {
     fontFamily: fonts.body,
