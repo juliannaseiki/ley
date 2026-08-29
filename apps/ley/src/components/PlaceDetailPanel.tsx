@@ -521,6 +521,7 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   headerRow: {
+    marginTop: spacing.sm,
     marginBottom: spacing.md,
   },
   title: {
