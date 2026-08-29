@@ -36,9 +36,6 @@ const SPRING_CONFIG = { damping: 18, mass: 0.9, stiffness: 160, useNativeDriver:
 const SEARCH_DEBOUNCE_MS = 400;
 const MIN_QUERY_LENGTH = 2;
 
-const GALLERY_PLACEHOLDERS = [colors.skyBlue, colors.sageGreen, colors.skyBlue, colors.sageGreen];
-const GALLERY_ROWS = [GALLERY_PLACEHOLDERS.slice(0, 2), GALLERY_PLACEHOLDERS.slice(2, 4)];
-
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
@@ -465,16 +462,6 @@ export function PlaceDetailPanel({
               </Text>
             ) : null}
 
-            <View style={styles.gallery}>
-              {GALLERY_ROWS.map((row, rowIndex) => (
-                <View key={rowIndex} style={styles.galleryRow}>
-                  {row.map((color, colIndex) => (
-                    <View key={colIndex} style={[styles.photo, { backgroundColor: color }]} />
-                  ))}
-                </View>
-              ))}
-            </View>
-
             <Pressable
               onPress={handleOpenMaps}
               style={({ pressed }) => [styles.mapsButton, pressed && styles.mapsButtonPressed]}
@@ -579,19 +566,6 @@ const styles = StyleSheet.create({
     color: colors.inkSoft,
     textAlign: 'center',
     marginBottom: spacing.md,
-  },
-  gallery: {
-    gap: spacing.sm,
-    marginBottom: spacing.lg,
-  },
-  galleryRow: {
-    flexDirection: 'row',
-    gap: spacing.sm,
-  },
-  photo: {
-    flex: 1,
-    height: 110,
-    borderRadius: radii.md,
   },
   mapsButton: {
     borderWidth: 1,
