@@ -59,6 +59,8 @@ type Props = {
   savedPlacesLoading: boolean;
   savedPlacesError: string | null;
   onPlaceSaved: (place: SavedPlace) => void;
+  onBack: () => void;
+  onEditPlace: () => void;
 };
 
 export function PlaceDetailPanel({
@@ -70,6 +72,8 @@ export function PlaceDetailPanel({
   savedPlacesLoading,
   savedPlacesError,
   onPlaceSaved,
+  onBack,
+  onEditPlace,
 }: Props) {
   const { session } = useAuth();
   const insets = useSafeAreaInsets();
@@ -355,7 +359,21 @@ export function PlaceDetailPanel({
     >
       <View {...headerPanResponder.panHandlers}>
         <View style={styles.headerRow}>
+          {selectedSavedPlace ? (
+            <Pressable onPress={onBack} style={styles.headerButton} hitSlop={8}>
+              <Text style={styles.headerButtonIcon}>‹</Text>
+            </Pressable>
+          ) : (
+            <View style={styles.headerButtonSpacer} />
+          )}
           <Text style={styles.title}>{title}</Text>
+          {selectedSavedPlace ? (
+            <Pressable onPress={onEditPlace} style={styles.headerButton} hitSlop={8}>
+              <Text style={styles.headerButtonIcon}>✎</Text>
+            </Pressable>
+          ) : (
+            <View style={styles.headerButtonSpacer} />
+          )}
         </View>
       </View>
 
@@ -521,14 +539,37 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
     marginTop: spacing.sm,
     marginBottom: spacing.md,
   },
+  headerButton: {
+    width: 36,
+    height: 36,
+    borderRadius: radii.pill,
+    backgroundColor: colors.white,
+    borderWidth: 1,
+    borderColor: colors.hairline,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerButtonSpacer: {
+    width: 36,
+    height: 36,
+  },
+  headerButtonIcon: {
+    fontFamily: fonts.headingSemiBold,
+    fontSize: 18,
+    color: colors.ink,
+  },
   title: {
+    flex: 1,
     fontFamily: fonts.headingSemiBold,
     fontSize: 22,
     color: colors.ink,
     textAlign: 'center',
+    marginHorizontal: spacing.sm,
   },
   selectedPlaceSubtitle: {
     fontFamily: fonts.body,

@@ -75,6 +75,11 @@ export function HomeScreen() {
     setAddingPlace(false);
   };
 
+  const handleBackToWelcome = () => setSelectedSavedPlace(null);
+
+  // Edit view doesn't exist yet — see LEY-26.
+  const handleEditPlace = () => {};
+
   const email = session?.user?.email;
   const panelTitle = addingPlace
     ? 'Add a place'
@@ -116,6 +121,8 @@ export function HomeScreen() {
         savedPlacesLoading={savedPlacesLoading}
         savedPlacesError={savedPlacesError}
         onPlaceSaved={handlePlaceSaved}
+        onBack={handleBackToWelcome}
+        onEditPlace={handleEditPlace}
       />
 
       <Pressable
