@@ -14,6 +14,7 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import * as ImagePicker from 'expo-image-picker';
 import { colors, fonts, radii, spacing, useDebouncedValue } from '@ley/ui';
 import { supabase, useAuth } from '@ley/auth';
 import { searchPlaces, PlaceSearchResult } from '../lib/foursquarePlaces';
@@ -41,7 +42,9 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
-const SAVED_PLACE_COLUMNS = 'id, name, category, formatted_address, latitude, longitude';
+const SAVED_PLACE_COLUMNS =
+  'id, name, category, formatted_address, latitude, longitude, photo_paths';
+const PHOTO_BUCKET = 'saved-place-photos';
 
 // Three resting heights the panel can snap to, ascending by how open the panel is — a plain
 // swipe-to-half default, with a further swipe up (or a fast flick, see onPanResponderRelease
@@ -58,6 +61,7 @@ type Props = {
   savedPlacesError: string | null;
   onPlaceSaved: (place: SavedPlace) => void;
   onPlaceDeleted: (placeId: string) => void;
+  onPlaceUpdated: (place: SavedPlace) => void;
   onBack: () => void;
   onSelectPlace: (place: SavedPlace) => void;
 };
@@ -72,6 +76,7 @@ export function PlaceDetailPanel({
   savedPlacesError,
   onPlaceSaved,
   onPlaceDeleted,
+  onPlaceUpdated,
   onBack,
   onSelectPlace,
 }: Props) {
@@ -130,6 +135,8 @@ export function PlaceDetailPanel({
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<PlaceSearchResult[]>([]);
@@ -157,6 +164,7 @@ export function PlaceDetailPanel({
     setIsEditing(false);
     setConfirmingDelete(false);
     setDeleteError(null);
+    setUploadError(null);
   }
 
   const [prevAddingPlace, setPrevAddingPlace] = useState(addingPlace);
@@ -335,6 +343,42 @@ export function PlaceDetailPanel({
     onPlaceDeleted(selectedSavedPlace.id);
   };
 
+  const handleAddPhoto = async () => {
+    if (!selectedSavedPlace || !session?.user || uploadingPhoto) return;
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      setUploadError('Photo library access is required to add a photo.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.7 });
+    if (result.canceled) return;
+    const asset = result.assets[0];
+    setUploadingPhoto(true);
+    setUploadError(null);
+    const arrayBuffer = await fetch(asset.uri).then((res) => res.arrayBuffer());
+    const extension = asset.uri.split('.').pop() ?? 'jpg';
+    const path = `${session.user.id}/${selectedSavedPlace.id}/${Date.now()}.${extension}`;
+    const { error: uploadErr } = await supabase.storage
+      .from(PHOTO_BUCKET)
+      .upload(path, arrayBuffer, { contentType: asset.mimeType ?? 'image/jpeg' });
+    if (uploadErr) {
+      setUploadingPhoto(false);
+      setUploadError(uploadErr.message);
+      return;
+    }
+    const nextPhotoPaths = [...selectedSavedPlace.photo_paths, path];
+    const { error: updateErr } = await supabase
+      .from('saved_places')
+      .update({ photo_paths: nextPhotoPaths })
+      .eq('id', selectedSavedPlace.id);
+    setUploadingPhoto(false);
+    if (updateErr) {
+      setUploadError(updateErr.message);
+      return;
+    }
+    onPlaceUpdated({ ...selectedSavedPlace, photo_paths: nextPhotoPaths });
+  };
+
   const handleSearchChange = (text: string) => {
     setSearchQuery(text);
     if (selectedPlace) setSelectedPlace(null);
@@ -503,18 +547,38 @@ export function PlaceDetailPanel({
             ) : null}
 
             {isEditing ? (
-              <Pressable
-                onPress={() => setConfirmingDelete(true)}
-                style={({ pressed }) => [
-                  styles.mapsButton,
-                  styles.deleteButton,
-                  pressed && styles.mapsButtonPressed,
-                ]}
-              >
-                <Text style={[styles.mapsButtonLabel, styles.deleteButtonLabel]}>
-                  Delete place
-                </Text>
-              </Pressable>
+              <>
+                <Pressable
+                  onPress={handleAddPhoto}
+                  disabled={uploadingPhoto}
+                  style={({ pressed }) => [
+                    styles.mapsButton,
+                    pressed && styles.mapsButtonPressed,
+                    uploadingPhoto && styles.addPlaceButtonDisabled,
+                  ]}
+                >
+                  {uploadingPhoto ? (
+                    <ActivityIndicator color={colors.inkSoft} />
+                  ) : (
+                    <Text style={styles.mapsButtonLabel}>Add photo</Text>
+                  )}
+                </Pressable>
+
+                {uploadError ? <Text style={styles.searchError}>{uploadError}</Text> : null}
+
+                <Pressable
+                  onPress={() => setConfirmingDelete(true)}
+                  style={({ pressed }) => [
+                    styles.mapsButton,
+                    styles.deleteButton,
+                    pressed && styles.mapsButtonPressed,
+                  ]}
+                >
+                  <Text style={[styles.mapsButtonLabel, styles.deleteButtonLabel]}>
+                    Delete place
+                  </Text>
+                </Pressable>
+              </>
             ) : null}
           </>
         ) : savedPlacesLoading ? (
