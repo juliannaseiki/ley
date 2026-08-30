@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Animated,
   Dimensions,
+  Image,
   Linking,
   Modal,
   PanResponder,
@@ -44,6 +45,7 @@ function clamp(value: number, min: number, max: number): number {
 
 const SAVED_PLACE_COLUMNS = 'id, name, category, formatted_address, latitude, longitude';
 const PHOTO_BUCKET = 'saved-place-photos';
+const PHOTO_SIGNED_URL_TTL_SECONDS = 60 * 60;
 
 // Three resting heights the panel can snap to, ascending by how open the panel is — a plain
 // swipe-to-half default, with a further swipe up (or a fast flick, see onPanResponderRelease
@@ -134,6 +136,7 @@ export function PlaceDetailPanel({
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [photoUrls, setPhotoUrls] = useState<string[]>([]);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<PlaceSearchResult[]>([]);
@@ -223,6 +226,37 @@ export function PlaceDetailPanel({
       cancelled = true;
     };
   }, [trimmedQuery, queryTooShort, addingPlace, selectedPlace]);
+
+  const loadPhotoUrls = async (placeId: string): Promise<string[]> => {
+    const { data: photos } = await supabase
+      .from('saved_place_photos')
+      .select('storage_path')
+      .eq('saved_place_id', placeId)
+      .order('created_at', { ascending: true });
+    const paths = (photos ?? []).map((photo) => photo.storage_path);
+    if (paths.length === 0) return [];
+    const { data: signedUrls } = await supabase.storage
+      .from(PHOTO_BUCKET)
+      .createSignedUrls(paths, PHOTO_SIGNED_URL_TTL_SECONDS);
+    return (signedUrls ?? [])
+      .map((entry) => entry.signedUrl)
+      .filter((url): url is string => Boolean(url));
+  };
+
+  useEffect(() => {
+    if (!selectedSavedPlace) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setPhotoUrls([]);
+      return;
+    }
+    let cancelled = false;
+    loadPhotoUrls(selectedSavedPlace.id).then((urls) => {
+      if (!cancelled) setPhotoUrls(urls);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedSavedPlace]);
 
   // dragStartY/maxPanelHeightRef/panelPeekHeightRef/expansionRef are only ever read/written inside
   // these handlers, never during render — the rule can't see that the closure is deferred, hence
@@ -368,10 +402,14 @@ export function PlaceDetailPanel({
       user_id: session.user.id,
       storage_path: path,
     });
-    setUploadingPhoto(false);
     if (insertErr) {
+      setUploadingPhoto(false);
       setUploadError(insertErr.message);
+      return;
     }
+    const urls = await loadPhotoUrls(selectedSavedPlace.id);
+    setUploadingPhoto(false);
+    setPhotoUrls(urls);
   };
 
   const handleSearchChange = (text: string) => {
@@ -525,6 +563,18 @@ export function PlaceDetailPanel({
                   .filter(Boolean)
                   .join(' · ')}
               </Text>
+            ) : null}
+
+            {photoUrls.length > 0 ? (
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                style={styles.photoRow}
+              >
+                {photoUrls.map((url) => (
+                  <Image key={url} source={{ uri: url }} style={styles.photoThumbnail} />
+                ))}
+              </ScrollView>
             ) : null}
 
             {isEditing ? (
@@ -705,6 +755,16 @@ const styles = StyleSheet.create({
     color: colors.inkSoft,
     textAlign: 'center',
     marginBottom: spacing.md,
+  },
+  photoRow: {
+    marginBottom: spacing.md,
+  },
+  photoThumbnail: {
+    width: 96,
+    height: 96,
+    borderRadius: radii.md,
+    marginRight: spacing.sm,
+    backgroundColor: colors.panelBackground,
   },
   mapsButton: {
     borderWidth: 1,
