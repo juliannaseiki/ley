@@ -1,7 +1,9 @@
 -- Photos users attach to a saved place, stored in Supabase Storage under
--- `{user_id}/{saved_place_id}/{filename}` so storage RLS can key off the path alone.
+-- `{user_id}/{saved_place_id}/{filename}` so storage RLS can key off the path alone. The bucket is
+-- private, so this column holds storage object paths (not public URLs) — resolve to a signed URL
+-- at display time.
 alter table public.saved_places
-  add column if not exists photo_urls text[] not null default '{}';
+  add column if not exists photo_paths text[] not null default '{}';
 
 insert into storage.buckets (id, name, public)
 values ('saved-place-photos', 'saved-place-photos', false)
