@@ -227,23 +227,32 @@ export function PlaceDetailPanel({
     };
   }, [trimmedQuery, queryTooShort, addingPlace, selectedPlace]);
 
+  const loadPhotoUrls = async (placeId: string): Promise<string[]> => {
+    const { data: photos } = await supabase
+      .from('saved_place_photos')
+      .select('storage_path')
+      .eq('saved_place_id', placeId)
+      .order('created_at', { ascending: true });
+    const paths = (photos ?? []).map((photo) => photo.storage_path);
+    if (paths.length === 0) return [];
+    const { data: signedUrls } = await supabase.storage
+      .from(PHOTO_BUCKET)
+      .createSignedUrls(paths, PHOTO_SIGNED_URL_TTL_SECONDS);
+    return (signedUrls ?? [])
+      .map((entry) => entry.signedUrl)
+      .filter((url): url is string => Boolean(url));
+  };
+
   useEffect(() => {
-    if (!selectedSavedPlace || selectedSavedPlace.photo_paths.length === 0) {
+    if (!selectedSavedPlace) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setPhotoUrls([]);
       return;
     }
     let cancelled = false;
-    supabase.storage
-      .from(PHOTO_BUCKET)
-      .createSignedUrls(selectedSavedPlace.photo_paths, PHOTO_SIGNED_URL_TTL_SECONDS)
-      .then(({ data }) => {
-        if (cancelled) return;
-        const urls = (data ?? [])
-          .map((entry) => entry.signedUrl)
-          .filter((url): url is string => Boolean(url));
-        setPhotoUrls(urls);
-      });
+    loadPhotoUrls(selectedSavedPlace.id).then((urls) => {
+      if (!cancelled) setPhotoUrls(urls);
+    });
     return () => {
       cancelled = true;
     };
@@ -393,10 +402,14 @@ export function PlaceDetailPanel({
       user_id: session.user.id,
       storage_path: path,
     });
-    setUploadingPhoto(false);
     if (insertErr) {
+      setUploadingPhoto(false);
       setUploadError(insertErr.message);
+      return;
     }
+    const urls = await loadPhotoUrls(selectedSavedPlace.id);
+    setUploadingPhoto(false);
+    setPhotoUrls(urls);
   };
 
   const handleSearchChange = (text: string) => {
