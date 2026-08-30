@@ -42,8 +42,7 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
-const SAVED_PLACE_COLUMNS =
-  'id, name, category, formatted_address, latitude, longitude, photo_paths';
+const SAVED_PLACE_COLUMNS = 'id, name, category, formatted_address, latitude, longitude';
 const PHOTO_BUCKET = 'saved-place-photos';
 
 // Three resting heights the panel can snap to, ascending by how open the panel is — a plain
@@ -61,7 +60,6 @@ type Props = {
   savedPlacesError: string | null;
   onPlaceSaved: (place: SavedPlace) => void;
   onPlaceDeleted: (placeId: string) => void;
-  onPlaceUpdated: (place: SavedPlace) => void;
   onBack: () => void;
   onSelectPlace: (place: SavedPlace) => void;
 };
@@ -76,7 +74,6 @@ export function PlaceDetailPanel({
   savedPlacesError,
   onPlaceSaved,
   onPlaceDeleted,
-  onPlaceUpdated,
   onBack,
   onSelectPlace,
 }: Props) {
@@ -366,17 +363,15 @@ export function PlaceDetailPanel({
       setUploadError(uploadErr.message);
       return;
     }
-    const nextPhotoPaths = [...selectedSavedPlace.photo_paths, path];
-    const { error: updateErr } = await supabase
-      .from('saved_places')
-      .update({ photo_paths: nextPhotoPaths })
-      .eq('id', selectedSavedPlace.id);
+    const { error: insertErr } = await supabase.from('saved_place_photos').insert({
+      saved_place_id: selectedSavedPlace.id,
+      user_id: session.user.id,
+      storage_path: path,
+    });
     setUploadingPhoto(false);
-    if (updateErr) {
-      setUploadError(updateErr.message);
-      return;
+    if (insertErr) {
+      setUploadError(insertErr.message);
     }
-    onPlaceUpdated({ ...selectedSavedPlace, photo_paths: nextPhotoPaths });
   };
 
   const handleSearchChange = (text: string) => {

@@ -5,5 +5,4 @@ export type SavedPlace = {
   formatted_address: string | null;
   latitude: number;
   longitude: number;
-  photo_paths: string[];
 };
