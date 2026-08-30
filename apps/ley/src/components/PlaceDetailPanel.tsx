@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Animated,
   Dimensions,
+  Image,
   Linking,
   Modal,
   PanResponder,
@@ -45,6 +46,7 @@ function clamp(value: number, min: number, max: number): number {
 const SAVED_PLACE_COLUMNS =
   'id, name, category, formatted_address, latitude, longitude, photo_paths';
 const PHOTO_BUCKET = 'saved-place-photos';
+const PHOTO_SIGNED_URL_TTL_SECONDS = 60 * 60;
 
 // Three resting heights the panel can snap to, ascending by how open the panel is — a plain
 // swipe-to-half default, with a further swipe up (or a fast flick, see onPanResponderRelease
@@ -137,6 +139,7 @@ export function PlaceDetailPanel({
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [photoUrls, setPhotoUrls] = useState<string[]>([]);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<PlaceSearchResult[]>([]);
@@ -226,6 +229,28 @@ export function PlaceDetailPanel({
       cancelled = true;
     };
   }, [trimmedQuery, queryTooShort, addingPlace, selectedPlace]);
+
+  useEffect(() => {
+    if (!selectedSavedPlace || selectedSavedPlace.photo_paths.length === 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setPhotoUrls([]);
+      return;
+    }
+    let cancelled = false;
+    supabase.storage
+      .from(PHOTO_BUCKET)
+      .createSignedUrls(selectedSavedPlace.photo_paths, PHOTO_SIGNED_URL_TTL_SECONDS)
+      .then(({ data }) => {
+        if (cancelled) return;
+        const urls = (data ?? [])
+          .map((entry) => entry.signedUrl)
+          .filter((url): url is string => Boolean(url));
+        setPhotoUrls(urls);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedSavedPlace]);
 
   // dragStartY/maxPanelHeightRef/panelPeekHeightRef/expansionRef are only ever read/written inside
   // these handlers, never during render — the rule can't see that the closure is deferred, hence
@@ -532,6 +557,18 @@ export function PlaceDetailPanel({
               </Text>
             ) : null}
 
+            {photoUrls.length > 0 ? (
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                style={styles.photoRow}
+              >
+                {photoUrls.map((url) => (
+                  <Image key={url} source={{ uri: url }} style={styles.photoThumbnail} />
+                ))}
+              </ScrollView>
+            ) : null}
+
             {isEditing ? (
               <TextInput
                 placeholder="Add a note about this place…"
@@ -710,6 +747,16 @@ const styles = StyleSheet.create({
     color: colors.inkSoft,
     textAlign: 'center',
     marginBottom: spacing.md,
+  },
+  photoRow: {
+    marginBottom: spacing.md,
+  },
+  photoThumbnail: {
+    width: 96,
+    height: 96,
+    borderRadius: radii.md,
+    marginRight: spacing.sm,
+    backgroundColor: colors.panelBackground,
   },
   mapsButton: {
     borderWidth: 1,
