@@ -155,6 +155,7 @@ export function PlaceDetailPanel({
   const [confirmingDeletePhoto, setConfirmingDeletePhoto] = useState<SavedPlacePhoto | null>(null);
   const [deletingPhoto, setDeletingPhoto] = useState(false);
   const [deletePhotoError, setDeletePhotoError] = useState<string | null>(null);
+  const [savedPlacePhotoUrls, setSavedPlacePhotoUrls] = useState<Record<string, string>>({});
 
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<PlaceSearchResult[]>([]);
@@ -278,6 +279,50 @@ export function PlaceDetailPanel({
       cancelled = true;
     };
   }, [selectedSavedPlace]);
+
+  useEffect(() => {
+    if (savedPlaces.length === 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setSavedPlacePhotoUrls({});
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const { data: rows } = await supabase
+        .from('saved_place_photos')
+        .select('saved_place_id, storage_path')
+        .in(
+          'saved_place_id',
+          savedPlaces.map((place) => place.id)
+        )
+        .order('created_at', { ascending: false });
+      if (!rows || rows.length === 0) {
+        if (!cancelled) setSavedPlacePhotoUrls({});
+        return;
+      }
+      // Rows are newest-first, so the first one seen per place is the one loadPhoto would also
+      // pick as "the" photo for that place.
+      const pathByPlaceId = new Map<string, string>();
+      for (const row of rows) {
+        if (!pathByPlaceId.has(row.saved_place_id)) {
+          pathByPlaceId.set(row.saved_place_id, row.storage_path);
+        }
+      }
+      const { data: signedUrls } = await supabase.storage
+        .from(PHOTO_BUCKET)
+        .createSignedUrls(Array.from(pathByPlaceId.values()), PHOTO_SIGNED_URL_TTL_SECONDS);
+      const urlByPath = new Map((signedUrls ?? []).map((entry) => [entry.path, entry.signedUrl]));
+      const urlByPlaceId: Record<string, string> = {};
+      for (const [placeId, path] of pathByPlaceId) {
+        const url = urlByPath.get(path);
+        if (url) urlByPlaceId[placeId] = url;
+      }
+      if (!cancelled) setSavedPlacePhotoUrls(urlByPlaceId);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [savedPlaces]);
 
   // dragStartY/maxPanelHeightRef/panelPeekHeightRef/expansionRef are only ever read/written inside
   // these handlers, never during render — the rule can't see that the closure is deferred, hence
@@ -451,6 +496,9 @@ export function PlaceDetailPanel({
     const loaded = await loadPhoto(placeId);
     setUploadingPhoto(false);
     setPhoto(loaded);
+    if (loaded) {
+      setSavedPlacePhotoUrls((prev) => ({ ...prev, [placeId]: loaded.url }));
+    }
   };
 
   const handleDeletePhoto = async () => {
@@ -476,6 +524,13 @@ export function PlaceDetailPanel({
     }
     setPhoto(null);
     setConfirmingDeletePhoto(null);
+    if (selectedSavedPlace) {
+      setSavedPlacePhotoUrls((prev) => {
+        const next = { ...prev };
+        delete next[selectedSavedPlace.id];
+        return next;
+      });
+    }
   };
 
   const handleSearchChange = (text: string) => {
@@ -699,19 +754,31 @@ export function PlaceDetailPanel({
         ) : savedPlacesError ? (
           <Text style={styles.searchError}>{savedPlacesError}</Text>
         ) : savedPlaces.length > 0 ? (
-          <View style={styles.resultsList}>
+          <View style={styles.savedPlaceList}>
             {savedPlaces.map((place) => (
               <Pressable
                 key={place.id}
                 onPress={() => onSelectPlace(place)}
-                style={({ pressed }) => [styles.resultRow, pressed && styles.resultRowPressed]}
+                style={({ pressed }) => [
+                  styles.savedPlaceCard,
+                  pressed && styles.savedPlaceCardPressed,
+                ]}
               >
-                <Text style={styles.resultName}>{place.name}</Text>
-                {place.category || place.formatted_address ? (
-                  <Text style={styles.resultAddress}>
-                    {[place.category, place.formatted_address].filter(Boolean).join(' · ')}
-                  </Text>
+                {savedPlacePhotoUrls[place.id] ? (
+                  <Image
+                    source={{ uri: savedPlacePhotoUrls[place.id] }}
+                    style={styles.savedPlacePhoto}
+                    resizeMode="cover"
+                  />
                 ) : null}
+                <View style={styles.savedPlaceTextGroup}>
+                  <Text style={styles.resultName}>{place.name}</Text>
+                  {place.category || place.formatted_address ? (
+                    <Text style={styles.resultAddress}>
+                      {[place.category, place.formatted_address].filter(Boolean).join(' · ')}
+                    </Text>
+                  ) : null}
+                </View>
               </Pressable>
             ))}
           </View>
@@ -1033,6 +1100,31 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: colors.inkSoft,
     marginTop: 2,
+  },
+  savedPlaceList: {
+    marginTop: spacing.sm,
+    gap: spacing.sm,
+  },
+  savedPlaceCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.hairline,
+    borderRadius: radii.md,
+    padding: spacing.sm,
+  },
+  savedPlaceCardPressed: {
+    backgroundColor: colors.panelBackground,
+  },
+  savedPlacePhoto: {
+    width: 48,
+    height: 48,
+    borderRadius: radii.sm,
+    marginRight: spacing.sm,
+    backgroundColor: colors.panelBackground,
+  },
+  savedPlaceTextGroup: {
+    flex: 1,
   },
   emptyState: {
     fontFamily: fonts.body,
