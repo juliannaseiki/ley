@@ -60,7 +60,10 @@ type SavedPlacePhoto = {
 // rather than something the user arranges. Any photos beyond the cap still show below the grid in
 // the plain horizontal scroll row, rather than building a full gallery/lightbox for this iteration.
 const MAX_GRID_PHOTOS = 4;
-const PHOTO_ASPECT_RATIO = 1;
+// Fixed on the grid's outer container (not per-cell) so the overall grid area is always this same
+// shape regardless of photo count — rows and cells then just divide that fixed area with flex: 1,
+// rather than each cell having its own aspect ratio and the total height varying with row count.
+const PHOTO_GRID_ASPECT_RATIO = 1;
 
 function getPhotoGridRows(photos: SavedPlacePhoto[]): SavedPlacePhoto[][] {
   const capped = photos.slice(0, MAX_GRID_PHOTOS);
@@ -944,16 +947,17 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
   },
   photoGrid: {
+    aspectRatio: PHOTO_GRID_ASPECT_RATIO,
     gap: spacing.sm,
     marginBottom: spacing.md,
   },
   photoGridRow: {
+    flex: 1,
     flexDirection: 'row',
     gap: spacing.sm,
   },
   photoGridCell: {
     flex: 1,
-    aspectRatio: PHOTO_ASPECT_RATIO,
     position: 'relative',
   },
   photoGridImage: {
