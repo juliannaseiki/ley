@@ -54,6 +54,30 @@ type SavedPlacePhoto = {
   storagePath: string;
   url: string;
 };
+
+// The grid layout caps at 4 photos, arranged: 1 full-width, 2 side-by-side, 3 as one-on-top plus
+// two below, 4 as a 2x2 grid — always in upload order, so the layout is a pure function of count
+// rather than something the user arranges. Any photos beyond the cap still show below the grid in
+// the plain horizontal scroll row, rather than building a full gallery/lightbox for this iteration.
+const MAX_GRID_PHOTOS = 4;
+const PHOTO_ASPECT_RATIO = 1;
+
+function getPhotoGridRows(photos: SavedPlacePhoto[]): SavedPlacePhoto[][] {
+  const capped = photos.slice(0, MAX_GRID_PHOTOS);
+  switch (capped.length) {
+    case 0:
+      return [];
+    case 3:
+      return [[capped[0]], [capped[1], capped[2]]];
+    case 4:
+      return [
+        [capped[0], capped[1]],
+        [capped[2], capped[3]],
+      ];
+    default:
+      return [capped];
+  }
+}
 // Cap the longer side of an uploaded photo to the device's own screen width in physical pixels —
 // camera originals (often 3000-4000px+) are far larger than that, so uploading them unresized
 // wastes upload/download bandwidth for no visual benefit. Device width (rather than a flat
@@ -637,12 +661,39 @@ export function PlaceDetailPanel({
             ) : null}
 
             {photos.length > 0 ? (
+              <View style={styles.photoGrid}>
+                {getPhotoGridRows(photos).map((row, rowIndex) => (
+                  <View key={rowIndex} style={styles.photoGridRow}>
+                    {row.map((photo) => (
+                      <View key={photo.id} style={styles.photoGridCell}>
+                        <Image
+                          source={{ uri: photo.url }}
+                          style={styles.photoGridImage}
+                          resizeMode="cover"
+                        />
+                        {isEditing ? (
+                          <Pressable
+                            onPress={() => setConfirmingDeletePhoto(photo)}
+                            style={styles.photoDeleteButton}
+                            hitSlop={8}
+                          >
+                            <Text style={styles.photoDeleteButtonLabel}>×</Text>
+                          </Pressable>
+                        ) : null}
+                      </View>
+                    ))}
+                  </View>
+                ))}
+              </View>
+            ) : null}
+
+            {photos.length > MAX_GRID_PHOTOS ? (
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator={false}
                 style={styles.photoRow}
               >
-                {photos.map((photo) => (
+                {photos.slice(MAX_GRID_PHOTOS).map((photo) => (
                   <View key={photo.id} style={styles.photoThumbnailWrapper}>
                     <Image source={{ uri: photo.url }} style={styles.photoThumbnail} />
                     {isEditing ? (
@@ -876,6 +927,25 @@ const styles = StyleSheet.create({
     color: colors.inkSoft,
     textAlign: 'center',
     marginBottom: spacing.md,
+  },
+  photoGrid: {
+    gap: spacing.sm,
+    marginBottom: spacing.md,
+  },
+  photoGridRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  photoGridCell: {
+    flex: 1,
+    aspectRatio: PHOTO_ASPECT_RATIO,
+    position: 'relative',
+  },
+  photoGridImage: {
+    width: '100%',
+    height: '100%',
+    borderRadius: radii.md,
+    backgroundColor: colors.panelBackground,
   },
   photoRow: {
     marginBottom: spacing.md,
