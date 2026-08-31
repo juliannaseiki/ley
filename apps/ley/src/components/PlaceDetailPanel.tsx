@@ -649,18 +649,15 @@ export function PlaceDetailPanel({
                 onPress={handleAddPhoto}
                 disabled={uploadingPhoto}
                 style={({ pressed }) => [
-                  styles.mapsButton,
-                  pressed && styles.mapsButtonPressed,
-                  uploadingPhoto && styles.addPlaceButtonDisabled,
+                  styles.photoSlot,
+                  styles.photoSlotPlaceholder,
+                  pressed && styles.photoSlotPlaceholderPressed,
                 ]}
               >
                 {uploadingPhoto ? (
                   <ActivityIndicator color={colors.inkSoft} />
                 ) : (
-                  <View style={styles.photoAddRow}>
-                    <Text style={styles.photoAddIcon}>+</Text>
-                    <Text style={styles.mapsButtonLabel}>Add a photo</Text>
-                  </View>
+                  <Text style={styles.photoAddIcon}>+</Text>
                 )}
               </Pressable>
             ) : null}
@@ -864,11 +861,22 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
   },
   photoSlot: {
-    width: 120,
-    height: 120,
+    width: '100%',
+    aspectRatio: 1,
     borderRadius: radii.md,
     marginBottom: spacing.md,
     position: 'relative',
+  },
+  photoSlotPlaceholder: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.panelBackground,
+    borderWidth: 1,
+    borderColor: colors.hairline,
+    borderStyle: 'dashed',
+  },
+  photoSlotPlaceholderPressed: {
+    backgroundColor: colors.hairline,
   },
   photoSlotImage: {
     width: '100%',
@@ -876,15 +884,9 @@ const styles = StyleSheet.create({
     borderRadius: radii.md,
     backgroundColor: colors.panelBackground,
   },
-  photoAddRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.xs,
-  },
   photoAddIcon: {
     fontFamily: fonts.headingSemiBold,
-    fontSize: 18,
-    lineHeight: 20,
+    fontSize: 32,
     color: colors.inkSoft,
   },
   photoDeleteButton: {
