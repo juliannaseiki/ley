@@ -48,6 +48,17 @@ function clamp(value: number, min: number, max: number): number {
 const SAVED_PLACE_COLUMNS = 'id, name, category, formatted_address, latitude, longitude';
 const PHOTO_BUCKET = 'saved-place-photos';
 const PHOTO_SIGNED_URL_TTL_SECONDS = 60 * 60;
+const SAVED_PLACE_CARD_HEIGHT = 96;
+
+// Same set + hash as emojiForPlaceId in webview-src/globe-entry.js, so a place's list-view fallback
+// matches its globe pin — kept as a separate copy since the webview bundle isn't reachable from
+// here, but both are pure functions of the place id, so there's nothing to keep in sync at runtime.
+const PIN_FLOWER_EMOJIS = ['🌸', '🌷', '🌹', '🌺', '🌻', '🌼'];
+function emojiForPlaceId(id: string): string {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
+  return PIN_FLOWER_EMOJIS[hash % PIN_FLOWER_EMOJIS.length];
+}
 
 type SavedPlacePhoto = {
   id: string;
@@ -770,11 +781,17 @@ export function PlaceDetailPanel({
                     style={styles.savedPlacePhoto}
                     resizeMode="cover"
                   />
-                ) : null}
+                ) : (
+                  <View style={styles.savedPlaceEmoji}>
+                    <Text style={styles.savedPlaceEmojiText}>{emojiForPlaceId(place.id)}</Text>
+                  </View>
+                )}
                 <View style={styles.savedPlaceTextGroup}>
-                  <Text style={styles.resultName}>{place.name}</Text>
+                  <Text style={styles.resultName} numberOfLines={1}>
+                    {place.name}
+                  </Text>
                   {place.category || place.formatted_address ? (
-                    <Text style={styles.resultAddress}>
+                    <Text style={styles.resultAddress} numberOfLines={3}>
                       {[place.category, place.formatted_address].filter(Boolean).join(' · ')}
                     </Text>
                   ) : null}
@@ -1108,6 +1125,7 @@ const styles = StyleSheet.create({
   savedPlaceCard: {
     flexDirection: 'row',
     alignItems: 'stretch',
+    height: SAVED_PLACE_CARD_HEIGHT,
     borderWidth: 1,
     borderColor: colors.hairline,
     borderRadius: radii.md,
@@ -1120,8 +1138,18 @@ const styles = StyleSheet.create({
     width: 88,
     backgroundColor: colors.panelBackground,
   },
+  savedPlaceEmoji: {
+    width: 88,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.panelBackground,
+  },
+  savedPlaceEmojiText: {
+    fontSize: 32,
+  },
   savedPlaceTextGroup: {
     flex: 1,
+    justifyContent: 'center',
     padding: spacing.sm,
   },
   emptyState: {
