@@ -657,7 +657,10 @@ export function PlaceDetailPanel({
                 {uploadingPhoto ? (
                   <ActivityIndicator color={colors.inkSoft} />
                 ) : (
-                  <Text style={styles.photoAddIcon}>+</Text>
+                  <>
+                    <Text style={styles.photoAddIcon}>+</Text>
+                    <Text style={styles.photoAddLabel}>Add photo</Text>
+                  </>
                 )}
               </Pressable>
             ) : null}
@@ -861,15 +864,18 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
   },
   photoSlot: {
-    width: '100%',
+    width: '85%',
     aspectRatio: 1,
     borderRadius: radii.md,
     marginBottom: spacing.md,
+    alignSelf: 'center',
     position: 'relative',
   },
   photoSlotPlaceholder: {
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    gap: spacing.xs,
     backgroundColor: colors.panelBackground,
     borderWidth: 1,
     borderColor: colors.hairline,
@@ -886,7 +892,13 @@ const styles = StyleSheet.create({
   },
   photoAddIcon: {
     fontFamily: fonts.headingSemiBold,
-    fontSize: 32,
+    fontSize: 22,
+    lineHeight: 24,
+    color: colors.inkSoft,
+  },
+  photoAddLabel: {
+    fontFamily: fonts.bodySemiBold,
+    fontSize: 15,
     color: colors.inkSoft,
   },
   photoDeleteButton: {
