@@ -48,6 +48,12 @@ function clamp(value: number, min: number, max: number): number {
 const SAVED_PLACE_COLUMNS = 'id, name, category, formatted_address, latitude, longitude';
 const PHOTO_BUCKET = 'saved-place-photos';
 const PHOTO_SIGNED_URL_TTL_SECONDS = 60 * 60;
+
+type SavedPlacePhoto = {
+  id: string;
+  storagePath: string;
+  url: string;
+};
 // Cap the longer side of an uploaded photo to the device's own screen width in physical pixels —
 // camera originals (often 3000-4000px+) are far larger than that, so uploading them unresized
 // wastes upload/download bandwidth for no visual benefit. Device width (rather than a flat
@@ -144,7 +150,10 @@ export function PlaceDetailPanel({
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const [photoUrls, setPhotoUrls] = useState<string[]>([]);
+  const [photos, setPhotos] = useState<SavedPlacePhoto[]>([]);
+  const [confirmingDeletePhoto, setConfirmingDeletePhoto] = useState<SavedPlacePhoto | null>(null);
+  const [deletingPhoto, setDeletingPhoto] = useState(false);
+  const [deletePhotoError, setDeletePhotoError] = useState<string | null>(null);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<PlaceSearchResult[]>([]);
@@ -173,6 +182,8 @@ export function PlaceDetailPanel({
     setConfirmingDelete(false);
     setDeleteError(null);
     setUploadError(null);
+    setConfirmingDeletePhoto(null);
+    setDeletePhotoError(null);
   }
 
   const [prevAddingPlace, setPrevAddingPlace] = useState(addingPlace);
@@ -235,31 +246,40 @@ export function PlaceDetailPanel({
     };
   }, [trimmedQuery, queryTooShort, addingPlace, selectedPlace]);
 
-  const loadPhotoUrls = async (placeId: string): Promise<string[]> => {
-    const { data: photos } = await supabase
+  const loadPhotos = async (placeId: string): Promise<SavedPlacePhoto[]> => {
+    const { data: rows } = await supabase
       .from('saved_place_photos')
-      .select('storage_path')
+      .select('id, storage_path')
       .eq('saved_place_id', placeId)
       .order('created_at', { ascending: true });
-    const paths = (photos ?? []).map((photo) => photo.storage_path);
-    if (paths.length === 0) return [];
+    if (!rows || rows.length === 0) return [];
     const { data: signedUrls } = await supabase.storage
       .from(PHOTO_BUCKET)
-      .createSignedUrls(paths, PHOTO_SIGNED_URL_TTL_SECONDS);
-    return (signedUrls ?? [])
-      .map((entry) => entry.signedUrl)
-      .filter((url): url is string => Boolean(url));
+      .createSignedUrls(
+        rows.map((row) => row.storage_path),
+        PHOTO_SIGNED_URL_TTL_SECONDS
+      );
+    const urlByPath = new Map(
+      (signedUrls ?? []).map((entry) => [entry.path, entry.signedUrl])
+    );
+    return rows
+      .map((row) => ({
+        id: row.id,
+        storagePath: row.storage_path,
+        url: urlByPath.get(row.storage_path),
+      }))
+      .filter((photo): photo is SavedPlacePhoto => Boolean(photo.url));
   };
 
   useEffect(() => {
     if (!selectedSavedPlace) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
-      setPhotoUrls([]);
+      setPhotos([]);
       return;
     }
     let cancelled = false;
-    loadPhotoUrls(selectedSavedPlace.id).then((urls) => {
-      if (!cancelled) setPhotoUrls(urls);
+    loadPhotos(selectedSavedPlace.id).then((loaded) => {
+      if (!cancelled) setPhotos(loaded);
     });
     return () => {
       cancelled = true;
@@ -433,9 +453,34 @@ export function PlaceDetailPanel({
       setUploadError(insertErr.message);
       return;
     }
-    const urls = await loadPhotoUrls(selectedSavedPlace.id);
+    const loaded = await loadPhotos(selectedSavedPlace.id);
     setUploadingPhoto(false);
-    setPhotoUrls(urls);
+    setPhotos(loaded);
+  };
+
+  const handleDeletePhoto = async () => {
+    if (!confirmingDeletePhoto || deletingPhoto) return;
+    setDeletingPhoto(true);
+    setDeletePhotoError(null);
+    const { error: storageErr } = await supabase.storage
+      .from(PHOTO_BUCKET)
+      .remove([confirmingDeletePhoto.storagePath]);
+    if (storageErr) {
+      setDeletingPhoto(false);
+      setDeletePhotoError(storageErr.message);
+      return;
+    }
+    const { error: deleteErr } = await supabase
+      .from('saved_place_photos')
+      .delete()
+      .eq('id', confirmingDeletePhoto.id);
+    setDeletingPhoto(false);
+    if (deleteErr) {
+      setDeletePhotoError(deleteErr.message);
+      return;
+    }
+    setPhotos((prev) => prev.filter((photo) => photo.id !== confirmingDeletePhoto.id));
+    setConfirmingDeletePhoto(null);
   };
 
   const handleSearchChange = (text: string) => {
@@ -591,14 +636,25 @@ export function PlaceDetailPanel({
               </Text>
             ) : null}
 
-            {photoUrls.length > 0 ? (
+            {photos.length > 0 ? (
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator={false}
                 style={styles.photoRow}
               >
-                {photoUrls.map((url) => (
-                  <Image key={url} source={{ uri: url }} style={styles.photoThumbnail} />
+                {photos.map((photo) => (
+                  <View key={photo.id} style={styles.photoThumbnailWrapper}>
+                    <Image source={{ uri: photo.url }} style={styles.photoThumbnail} />
+                    {isEditing ? (
+                      <Pressable
+                        onPress={() => setConfirmingDeletePhoto(photo)}
+                        style={styles.photoDeleteButton}
+                        hitSlop={8}
+                      >
+                        <Text style={styles.photoDeleteButtonLabel}>×</Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
                 ))}
               </ScrollView>
             ) : null}
@@ -718,6 +774,45 @@ export function PlaceDetailPanel({
           </View>
         </View>
       </Modal>
+
+      <Modal
+        visible={!!confirmingDeletePhoto}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setConfirmingDeletePhoto(null)}
+      >
+        <View style={styles.confirmBackdrop}>
+          <View style={styles.confirmCard}>
+            <Text style={styles.confirmMessage}>Would you like to remove this photo?</Text>
+            {deletePhotoError ? <Text style={styles.searchError}>{deletePhotoError}</Text> : null}
+            <View style={styles.confirmButtonRow}>
+              <Pressable
+                onPress={() => setConfirmingDeletePhoto(null)}
+                disabled={deletingPhoto}
+                style={({ pressed }) => [styles.confirmButton, pressed && styles.mapsButtonPressed]}
+              >
+                <Text style={styles.mapsButtonLabel}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={handleDeletePhoto}
+                disabled={deletingPhoto}
+                style={({ pressed }) => [
+                  styles.confirmButton,
+                  styles.confirmDeleteButton,
+                  pressed && styles.mapsButtonPressed,
+                  deletingPhoto && styles.addPlaceButtonDisabled,
+                ]}
+              >
+                {deletingPhoto ? (
+                  <ActivityIndicator color={colors.error} />
+                ) : (
+                  <Text style={[styles.mapsButtonLabel, styles.deleteButtonLabel]}>Delete</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </Animated.View>
   );
 }
@@ -785,12 +880,33 @@ const styles = StyleSheet.create({
   photoRow: {
     marginBottom: spacing.md,
   },
+  photoThumbnailWrapper: {
+    marginRight: spacing.sm,
+  },
   photoThumbnail: {
     width: 96,
     height: 96,
     borderRadius: radii.md,
-    marginRight: spacing.sm,
     backgroundColor: colors.panelBackground,
+  },
+  photoDeleteButton: {
+    position: 'absolute',
+    top: -6,
+    right: -6,
+    width: 24,
+    height: 24,
+    borderRadius: radii.pill,
+    backgroundColor: colors.white,
+    borderWidth: 1,
+    borderColor: colors.hairline,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  photoDeleteButtonLabel: {
+    fontFamily: fonts.bodySemiBold,
+    fontSize: 14,
+    lineHeight: 16,
+    color: colors.inkSoft,
   },
   mapsButton: {
     borderWidth: 1,
