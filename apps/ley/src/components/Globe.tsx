@@ -14,9 +14,10 @@ type GlobePlace = {
 type Props = {
   onPinTap?: (placeId: string) => void;
   savedPlaces?: GlobePlace[];
+  focusedPlace?: { lat: number; lon: number } | null;
 };
 
-export function Globe({ onPinTap, savedPlaces = [] }: Props) {
+export function Globe({ onPinTap, savedPlaces = [], focusedPlace }: Props) {
   const webViewRef = useRef<WebView>(null);
   const [webViewReady, setWebViewReady] = useState(false);
 
@@ -29,6 +30,18 @@ export function Globe({ onPinTap, savedPlaces = [] }: Props) {
       })
     );
   }, [webViewReady, savedPlaces]);
+
+  const focusedLat = focusedPlace?.lat;
+  const focusedLon = focusedPlace?.lon;
+  useEffect(() => {
+    if (!webViewReady || focusedLat === undefined || focusedLon === undefined) return;
+    // Reuses the exact same flyToLocation code the WebView runs for a direct pin tap (see
+    // handleTap in globe-entry.js) — this just gives RN a way to trigger it for selections that
+    // didn't originate from tapping this canvas, e.g. picking a place from the saved-places list.
+    webViewRef.current?.postMessage(
+      JSON.stringify({ type: 'flyToPlace', lat: focusedLat, lon: focusedLon })
+    );
+  }, [webViewReady, focusedLat, focusedLon]);
 
   const handleMessage = (event: WebViewMessageEvent) => {
     let message: WebViewOutMessage;

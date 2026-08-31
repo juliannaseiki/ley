@@ -1122,7 +1122,8 @@ window.addEventListener('resize', resize);
 // --- RN <-> WebView messaging ------------------------------------------
 // Outbound: 'ready' below, 'tap'/'pinTap' from handleTap. Inbound: 'setSavedPlaces', pushed from
 // React Native whenever the user's saved-places list changes — that data is per-user and can't be
-// baked in at build time like the rest of the map.
+// baked in at build time like the rest of the map. 'flyToPlace', pushed whenever RN wants the
+// camera to jump to a place without that jump having originated from a tap on this canvas.
 
 function postToRN(message) {
   if (window.ReactNativeWebView) {
@@ -1145,6 +1146,15 @@ function handleRNMessage(event) {
       emoji: emojiForPlaceId(place.id),
     }));
     render();
+  } else if (
+    message.type === 'flyToPlace' &&
+    typeof message.lon === 'number' &&
+    typeof message.lat === 'number'
+  ) {
+    // Same flyToLocation call handleTap makes for a direct pin tap — this just lets RN trigger it
+    // for selections that didn't originate from a tap on this canvas (e.g. picking a place from
+    // the saved-places list).
+    flyToLocation(message.lon, message.lat, MAX_ZOOM);
   }
 }
 // react-native-webview fires the message event on document on Android and window on iOS —

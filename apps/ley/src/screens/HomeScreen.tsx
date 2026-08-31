@@ -118,6 +118,11 @@ export function HomeScreen() {
           lat: place.latitude,
           lon: place.longitude,
         }))}
+        focusedPlace={
+          selectedSavedPlace
+            ? { lat: selectedSavedPlace.latitude, lon: selectedSavedPlace.longitude }
+            : null
+        }
       />
 
       <PlaceDetailPanel
