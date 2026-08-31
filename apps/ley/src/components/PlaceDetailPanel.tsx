@@ -7,6 +7,7 @@ import {
   Linking,
   Modal,
   PanResponder,
+  PixelRatio,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -16,12 +17,13 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
+import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { colors, fonts, radii, spacing, useDebouncedValue } from '@ley/ui';
 import { supabase, useAuth } from '@ley/auth';
 import { searchPlaces, PlaceSearchResult } from '../lib/foursquarePlaces';
 import { SavedPlace } from '../types/place';
 
-const { height: SCREEN_HEIGHT } = Dimensions.get('window');
+const { height: SCREEN_HEIGHT, width: SCREEN_WIDTH } = Dimensions.get('window');
 // The peeked panel's visible strip is sized to end just above the add-place FAB (HomeScreen.tsx's
 // styles.addButton: bottom: insets.bottom + spacing.md, 56x56) rather than extending underneath
 // it — computed from that same footprint plus a little breathing room, not a fixed fraction of
@@ -46,6 +48,12 @@ function clamp(value: number, min: number, max: number): number {
 const SAVED_PLACE_COLUMNS = 'id, name, category, formatted_address, latitude, longitude';
 const PHOTO_BUCKET = 'saved-place-photos';
 const PHOTO_SIGNED_URL_TTL_SECONDS = 60 * 60;
+// Cap the longer side of an uploaded photo to the device's own screen width in physical pixels —
+// camera originals (often 3000-4000px+) are far larger than that, so uploading them unresized
+// wastes upload/download bandwidth for no visual benefit. Device width (rather than a flat
+// constant) leaves room for a future full-width photo view to render these at native resolution.
+const MAX_PHOTO_DIMENSION = Math.round(SCREEN_WIDTH * PixelRatio.get());
+const PHOTO_COMPRESSION_QUALITY = 0.7;
 
 // Three resting heights the panel can snap to, ascending by how open the panel is — a plain
 // swipe-to-half default, with a further swipe up (or a fast flick, see onPanResponderRelease
@@ -386,12 +394,30 @@ export function PlaceDetailPanel({
     const asset = result.assets[0];
     setUploadingPhoto(true);
     setUploadError(null);
-    const arrayBuffer = await fetch(asset.uri).then((res) => res.arrayBuffer());
-    const extension = asset.uri.split('.').pop() ?? 'jpg';
+    let uploadUri = asset.uri;
+    let contentType = asset.mimeType ?? 'image/jpeg';
+    const longerSide = Math.max(asset.width, asset.height);
+    if (longerSide > MAX_PHOTO_DIMENSION) {
+      const scale = MAX_PHOTO_DIMENSION / longerSide;
+      const context = ImageManipulator.manipulate(asset.uri);
+      context.resize({
+        width: Math.round(asset.width * scale),
+        height: Math.round(asset.height * scale),
+      });
+      const rendered = await context.renderAsync();
+      const resized = await rendered.saveAsync({
+        format: SaveFormat.JPEG,
+        compress: PHOTO_COMPRESSION_QUALITY,
+      });
+      uploadUri = resized.uri;
+      contentType = 'image/jpeg';
+    }
+    const arrayBuffer = await fetch(uploadUri).then((res) => res.arrayBuffer());
+    const extension = contentType === 'image/jpeg' ? 'jpg' : (uploadUri.split('.').pop() ?? 'jpg');
     const path = `${session.user.id}/${selectedSavedPlace.id}/${Date.now()}.${extension}`;
     const { error: uploadErr } = await supabase.storage
       .from(PHOTO_BUCKET)
-      .upload(path, arrayBuffer, { contentType: asset.mimeType ?? 'image/jpeg' });
+      .upload(path, arrayBuffer, { contentType });
     if (uploadErr) {
       setUploadingPhoto(false);
       setUploadError(uploadErr.message);
