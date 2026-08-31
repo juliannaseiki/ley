@@ -428,56 +428,70 @@ export function PlaceDetailPanel({
 
   const handleAddPhoto = async () => {
     if (!selectedSavedPlace || !session?.user || uploadingPhoto) return;
+    const remainingSlots = MAX_GRID_PHOTOS - photos.length;
+    if (remainingSlots <= 0) return;
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
-      setUploadError('Photo library access is required to add a photo.');
+      setUploadError('Photo library access is required to add photos.');
       return;
     }
-    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.7 });
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      quality: 0.7,
+      allowsMultipleSelection: true,
+      selectionLimit: remainingSlots,
+    });
     if (result.canceled) return;
-    const asset = result.assets[0];
     setUploadingPhoto(true);
     setUploadError(null);
-    let uploadUri = asset.uri;
-    let contentType = asset.mimeType ?? 'image/jpeg';
-    const longerSide = Math.max(asset.width, asset.height);
-    if (longerSide > MAX_PHOTO_DIMENSION) {
-      const scale = MAX_PHOTO_DIMENSION / longerSide;
-      const context = ImageManipulator.manipulate(asset.uri);
-      context.resize({
-        width: Math.round(asset.width * scale),
-        height: Math.round(asset.height * scale),
+    const userId = session.user.id;
+    const placeId = selectedSavedPlace.id;
+    for (const asset of result.assets) {
+      let uploadUri = asset.uri;
+      let contentType = asset.mimeType ?? 'image/jpeg';
+      const longerSide = Math.max(asset.width, asset.height);
+      if (longerSide > MAX_PHOTO_DIMENSION) {
+        const scale = MAX_PHOTO_DIMENSION / longerSide;
+        const context = ImageManipulator.manipulate(asset.uri);
+        context.resize({
+          width: Math.round(asset.width * scale),
+          height: Math.round(asset.height * scale),
+        });
+        const rendered = await context.renderAsync();
+        const resized = await rendered.saveAsync({
+          format: SaveFormat.JPEG,
+          compress: PHOTO_COMPRESSION_QUALITY,
+        });
+        uploadUri = resized.uri;
+        contentType = 'image/jpeg';
+      }
+      const arrayBuffer = await fetch(uploadUri).then((res) => res.arrayBuffer());
+      const extension = contentType === 'image/jpeg' ? 'jpg' : (uploadUri.split('.').pop() ?? 'jpg');
+      // A random suffix (not just Date.now()) keeps paths unique when uploading several photos
+      // from this same loop in quick succession, which can land in the same millisecond.
+      const path = `${userId}/${placeId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${extension}`;
+      const { error: uploadErr } = await supabase.storage
+        .from(PHOTO_BUCKET)
+        .upload(path, arrayBuffer, { contentType });
+      if (uploadErr) {
+        setUploadingPhoto(false);
+        setUploadError(uploadErr.message);
+        setPhotos(await loadPhotos(placeId));
+        return;
+      }
+      const { error: insertErr } = await supabase.from('saved_place_photos').insert({
+        saved_place_id: placeId,
+        user_id: userId,
+        storage_path: path,
       });
-      const rendered = await context.renderAsync();
-      const resized = await rendered.saveAsync({
-        format: SaveFormat.JPEG,
-        compress: PHOTO_COMPRESSION_QUALITY,
-      });
-      uploadUri = resized.uri;
-      contentType = 'image/jpeg';
+      if (insertErr) {
+        setUploadingPhoto(false);
+        setUploadError(insertErr.message);
+        setPhotos(await loadPhotos(placeId));
+        return;
+      }
     }
-    const arrayBuffer = await fetch(uploadUri).then((res) => res.arrayBuffer());
-    const extension = contentType === 'image/jpeg' ? 'jpg' : (uploadUri.split('.').pop() ?? 'jpg');
-    const path = `${session.user.id}/${selectedSavedPlace.id}/${Date.now()}.${extension}`;
-    const { error: uploadErr } = await supabase.storage
-      .from(PHOTO_BUCKET)
-      .upload(path, arrayBuffer, { contentType });
-    if (uploadErr) {
-      setUploadingPhoto(false);
-      setUploadError(uploadErr.message);
-      return;
-    }
-    const { error: insertErr } = await supabase.from('saved_place_photos').insert({
-      saved_place_id: selectedSavedPlace.id,
-      user_id: session.user.id,
-      storage_path: path,
-    });
-    if (insertErr) {
-      setUploadingPhoto(false);
-      setUploadError(insertErr.message);
-      return;
-    }
-    const loaded = await loadPhotos(selectedSavedPlace.id);
+    const loaded = await loadPhotos(placeId);
     setUploadingPhoto(false);
     setPhotos(loaded);
   };
@@ -728,17 +742,18 @@ export function PlaceDetailPanel({
               <>
                 <Pressable
                   onPress={handleAddPhoto}
-                  disabled={uploadingPhoto}
+                  disabled={uploadingPhoto || photos.length >= MAX_GRID_PHOTOS}
                   style={({ pressed }) => [
                     styles.mapsButton,
                     pressed && styles.mapsButtonPressed,
-                    uploadingPhoto && styles.addPlaceButtonDisabled,
+                    (uploadingPhoto || photos.length >= MAX_GRID_PHOTOS) &&
+                      styles.addPlaceButtonDisabled,
                   ]}
                 >
                   {uploadingPhoto ? (
                     <ActivityIndicator color={colors.inkSoft} />
                   ) : (
-                    <Text style={styles.mapsButtonLabel}>Add photo</Text>
+                    <Text style={styles.mapsButtonLabel}>Add photos</Text>
                   )}
                 </Pressable>
 
