@@ -55,29 +55,6 @@ type SavedPlacePhoto = {
   url: string;
 };
 
-// The grid layout caps at 4 photos, arranged: 1 full-width, 2 side-by-side, 3 as one-on-top plus
-// two below, 4 as a 2x2 grid — always in upload order, so the layout is a pure function of count
-// rather than something the user arranges. Any photos beyond the cap still show below the grid in
-// the plain horizontal scroll row, rather than building a full gallery/lightbox for this iteration.
-const MAX_GRID_PHOTOS = 4;
-const PHOTO_ASPECT_RATIO = 1;
-
-function getPhotoGridRows(photos: SavedPlacePhoto[]): SavedPlacePhoto[][] {
-  const capped = photos.slice(0, MAX_GRID_PHOTOS);
-  switch (capped.length) {
-    case 0:
-      return [];
-    case 3:
-      return [[capped[0]], [capped[1], capped[2]]];
-    case 4:
-      return [
-        [capped[0], capped[1]],
-        [capped[2], capped[3]],
-      ];
-    default:
-      return [capped];
-  }
-}
 // Cap the longer side of an uploaded photo to the device's own screen width in physical pixels —
 // camera originals (often 3000-4000px+) are far larger than that, so uploading them unresized
 // wastes upload/download bandwidth for no visual benefit. Device width (rather than a flat
@@ -174,7 +151,7 @@ export function PlaceDetailPanel({
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const [photos, setPhotos] = useState<SavedPlacePhoto[]>([]);
+  const [photo, setPhoto] = useState<SavedPlacePhoto | null>(null);
   const [confirmingDeletePhoto, setConfirmingDeletePhoto] = useState<SavedPlacePhoto | null>(null);
   const [deletingPhoto, setDeletingPhoto] = useState(false);
   const [deletePhotoError, setDeletePhotoError] = useState<string | null>(null);
@@ -270,40 +247,32 @@ export function PlaceDetailPanel({
     };
   }, [trimmedQuery, queryTooShort, addingPlace, selectedPlace]);
 
-  const loadPhotos = async (placeId: string): Promise<SavedPlacePhoto[]> => {
+  const loadPhoto = async (placeId: string): Promise<SavedPlacePhoto | null> => {
     const { data: rows } = await supabase
       .from('saved_place_photos')
       .select('id, storage_path')
       .eq('saved_place_id', placeId)
-      .order('created_at', { ascending: true });
-    if (!rows || rows.length === 0) return [];
+      .order('created_at', { ascending: false })
+      .limit(1);
+    const row = rows?.[0];
+    if (!row) return null;
     const { data: signedUrls } = await supabase.storage
       .from(PHOTO_BUCKET)
-      .createSignedUrls(
-        rows.map((row) => row.storage_path),
-        PHOTO_SIGNED_URL_TTL_SECONDS
-      );
-    const urlByPath = new Map(
-      (signedUrls ?? []).map((entry) => [entry.path, entry.signedUrl])
-    );
-    return rows
-      .map((row) => ({
-        id: row.id,
-        storagePath: row.storage_path,
-        url: urlByPath.get(row.storage_path),
-      }))
-      .filter((photo): photo is SavedPlacePhoto => Boolean(photo.url));
+      .createSignedUrls([row.storage_path], PHOTO_SIGNED_URL_TTL_SECONDS);
+    const url = signedUrls?.[0]?.signedUrl;
+    if (!url) return null;
+    return { id: row.id, storagePath: row.storage_path, url };
   };
 
   useEffect(() => {
     if (!selectedSavedPlace) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
-      setPhotos([]);
+      setPhoto(null);
       return;
     }
     let cancelled = false;
-    loadPhotos(selectedSavedPlace.id).then((loaded) => {
-      if (!cancelled) setPhotos(loaded);
+    loadPhoto(selectedSavedPlace.id).then((loaded) => {
+      if (!cancelled) setPhoto(loaded);
     });
     return () => {
       cancelled = true;
@@ -427,73 +396,61 @@ export function PlaceDetailPanel({
   };
 
   const handleAddPhoto = async () => {
-    if (!selectedSavedPlace || !session?.user || uploadingPhoto) return;
-    const remainingSlots = MAX_GRID_PHOTOS - photos.length;
-    if (remainingSlots <= 0) return;
+    if (!selectedSavedPlace || !session?.user || uploadingPhoto || photo) return;
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
-      setUploadError('Photo library access is required to add photos.');
+      setUploadError('Photo library access is required to add a photo.');
       return;
     }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      quality: 0.7,
-      allowsMultipleSelection: true,
-      selectionLimit: remainingSlots,
-    });
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.7 });
     if (result.canceled) return;
+    const asset = result.assets[0];
     setUploadingPhoto(true);
     setUploadError(null);
     const userId = session.user.id;
     const placeId = selectedSavedPlace.id;
-    for (const asset of result.assets) {
-      let uploadUri = asset.uri;
-      let contentType = asset.mimeType ?? 'image/jpeg';
-      const longerSide = Math.max(asset.width, asset.height);
-      if (longerSide > MAX_PHOTO_DIMENSION) {
-        const scale = MAX_PHOTO_DIMENSION / longerSide;
-        const context = ImageManipulator.manipulate(asset.uri);
-        context.resize({
-          width: Math.round(asset.width * scale),
-          height: Math.round(asset.height * scale),
-        });
-        const rendered = await context.renderAsync();
-        const resized = await rendered.saveAsync({
-          format: SaveFormat.JPEG,
-          compress: PHOTO_COMPRESSION_QUALITY,
-        });
-        uploadUri = resized.uri;
-        contentType = 'image/jpeg';
-      }
-      const arrayBuffer = await fetch(uploadUri).then((res) => res.arrayBuffer());
-      const extension = contentType === 'image/jpeg' ? 'jpg' : (uploadUri.split('.').pop() ?? 'jpg');
-      // A random suffix (not just Date.now()) keeps paths unique when uploading several photos
-      // from this same loop in quick succession, which can land in the same millisecond.
-      const path = `${userId}/${placeId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${extension}`;
-      const { error: uploadErr } = await supabase.storage
-        .from(PHOTO_BUCKET)
-        .upload(path, arrayBuffer, { contentType });
-      if (uploadErr) {
-        setUploadingPhoto(false);
-        setUploadError(uploadErr.message);
-        setPhotos(await loadPhotos(placeId));
-        return;
-      }
-      const { error: insertErr } = await supabase.from('saved_place_photos').insert({
-        saved_place_id: placeId,
-        user_id: userId,
-        storage_path: path,
+    let uploadUri = asset.uri;
+    let contentType = asset.mimeType ?? 'image/jpeg';
+    const longerSide = Math.max(asset.width, asset.height);
+    if (longerSide > MAX_PHOTO_DIMENSION) {
+      const scale = MAX_PHOTO_DIMENSION / longerSide;
+      const context = ImageManipulator.manipulate(asset.uri);
+      context.resize({
+        width: Math.round(asset.width * scale),
+        height: Math.round(asset.height * scale),
       });
-      if (insertErr) {
-        setUploadingPhoto(false);
-        setUploadError(insertErr.message);
-        setPhotos(await loadPhotos(placeId));
-        return;
-      }
+      const rendered = await context.renderAsync();
+      const resized = await rendered.saveAsync({
+        format: SaveFormat.JPEG,
+        compress: PHOTO_COMPRESSION_QUALITY,
+      });
+      uploadUri = resized.uri;
+      contentType = 'image/jpeg';
     }
-    const loaded = await loadPhotos(placeId);
+    const arrayBuffer = await fetch(uploadUri).then((res) => res.arrayBuffer());
+    const extension = contentType === 'image/jpeg' ? 'jpg' : (uploadUri.split('.').pop() ?? 'jpg');
+    const path = `${userId}/${placeId}/${Date.now()}.${extension}`;
+    const { error: uploadErr } = await supabase.storage
+      .from(PHOTO_BUCKET)
+      .upload(path, arrayBuffer, { contentType });
+    if (uploadErr) {
+      setUploadingPhoto(false);
+      setUploadError(uploadErr.message);
+      return;
+    }
+    const { error: insertErr } = await supabase.from('saved_place_photos').insert({
+      saved_place_id: placeId,
+      user_id: userId,
+      storage_path: path,
+    });
+    if (insertErr) {
+      setUploadingPhoto(false);
+      setUploadError(insertErr.message);
+      return;
+    }
+    const loaded = await loadPhoto(placeId);
     setUploadingPhoto(false);
-    setPhotos(loaded);
+    setPhoto(loaded);
   };
 
   const handleDeletePhoto = async () => {
@@ -517,7 +474,7 @@ export function PlaceDetailPanel({
       setDeletePhotoError(deleteErr.message);
       return;
     }
-    setPhotos((prev) => prev.filter((photo) => photo.id !== confirmingDeletePhoto.id));
+    setPhoto(null);
     setConfirmingDeletePhoto(null);
   };
 
@@ -674,55 +631,41 @@ export function PlaceDetailPanel({
               </Text>
             ) : null}
 
-            {photos.length > 0 ? (
-              <View style={styles.photoGrid}>
-                {getPhotoGridRows(photos).map((row, rowIndex) => (
-                  <View key={rowIndex} style={styles.photoGridRow}>
-                    {row.map((photo) => (
-                      <View key={photo.id} style={styles.photoGridCell}>
-                        <Image
-                          source={{ uri: photo.url }}
-                          style={styles.photoGridImage}
-                          resizeMode="cover"
-                        />
-                        {isEditing ? (
-                          <Pressable
-                            onPress={() => setConfirmingDeletePhoto(photo)}
-                            style={styles.photoDeleteButton}
-                            hitSlop={8}
-                          >
-                            <Text style={styles.photoDeleteButtonLabel}>×</Text>
-                          </Pressable>
-                        ) : null}
-                      </View>
-                    ))}
-                  </View>
-                ))}
+            {photo ? (
+              <View style={styles.photoSlot}>
+                <Image source={{ uri: photo.url }} style={styles.photoSlotImage} resizeMode="cover" />
+                {isEditing ? (
+                  <Pressable
+                    onPress={() => setConfirmingDeletePhoto(photo)}
+                    style={styles.photoDeleteButton}
+                    hitSlop={8}
+                  >
+                    <Text style={styles.photoDeleteButtonLabel}>×</Text>
+                  </Pressable>
+                ) : null}
               </View>
+            ) : isEditing ? (
+              <Pressable
+                onPress={handleAddPhoto}
+                disabled={uploadingPhoto}
+                style={({ pressed }) => [
+                  styles.photoSlot,
+                  styles.photoSlotPlaceholder,
+                  pressed && styles.photoSlotPlaceholderPressed,
+                ]}
+              >
+                {uploadingPhoto ? (
+                  <ActivityIndicator color={colors.inkSoft} />
+                ) : (
+                  <>
+                    <Text style={styles.photoAddIcon}>+</Text>
+                    <Text style={styles.photoAddLabel}>Add photo</Text>
+                  </>
+                )}
+              </Pressable>
             ) : null}
 
-            {photos.length > MAX_GRID_PHOTOS ? (
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                style={styles.photoRow}
-              >
-                {photos.slice(MAX_GRID_PHOTOS).map((photo) => (
-                  <View key={photo.id} style={styles.photoThumbnailWrapper}>
-                    <Image source={{ uri: photo.url }} style={styles.photoThumbnail} />
-                    {isEditing ? (
-                      <Pressable
-                        onPress={() => setConfirmingDeletePhoto(photo)}
-                        style={styles.photoDeleteButton}
-                        hitSlop={8}
-                      >
-                        <Text style={styles.photoDeleteButtonLabel}>×</Text>
-                      </Pressable>
-                    ) : null}
-                  </View>
-                ))}
-              </ScrollView>
-            ) : null}
+            {uploadError ? <Text style={styles.searchError}>{uploadError}</Text> : null}
 
             {isEditing ? (
               <TextInput
@@ -739,39 +682,16 @@ export function PlaceDetailPanel({
             ) : null}
 
             {isEditing ? (
-              <>
-                <Pressable
-                  onPress={handleAddPhoto}
-                  disabled={uploadingPhoto || photos.length >= MAX_GRID_PHOTOS}
-                  style={({ pressed }) => [
-                    styles.mapsButton,
-                    pressed && styles.mapsButtonPressed,
-                    (uploadingPhoto || photos.length >= MAX_GRID_PHOTOS) &&
-                      styles.addPlaceButtonDisabled,
-                  ]}
-                >
-                  {uploadingPhoto ? (
-                    <ActivityIndicator color={colors.inkSoft} />
-                  ) : (
-                    <Text style={styles.mapsButtonLabel}>Add photos</Text>
-                  )}
-                </Pressable>
-
-                {uploadError ? <Text style={styles.searchError}>{uploadError}</Text> : null}
-
-                <Pressable
-                  onPress={() => setConfirmingDelete(true)}
-                  style={({ pressed }) => [
-                    styles.mapsButton,
-                    styles.deleteButton,
-                    pressed && styles.mapsButtonPressed,
-                  ]}
-                >
-                  <Text style={[styles.mapsButtonLabel, styles.deleteButtonLabel]}>
-                    Delete place
-                  </Text>
-                </Pressable>
-              </>
+              <Pressable
+                onPress={() => setConfirmingDelete(true)}
+                style={({ pressed }) => [
+                  styles.mapsButton,
+                  styles.deleteButton,
+                  pressed && styles.mapsButtonPressed,
+                ]}
+              >
+                <Text style={[styles.mapsButtonLabel, styles.deleteButtonLabel]}>Delete place</Text>
+              </Pressable>
             ) : null}
           </>
         ) : savedPlacesLoading ? (
@@ -943,36 +863,43 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: spacing.md,
   },
-  photoGrid: {
-    gap: spacing.sm,
+  photoSlot: {
+    width: '85%',
+    aspectRatio: 1,
+    borderRadius: radii.md,
     marginBottom: spacing.md,
-  },
-  photoGridRow: {
-    flexDirection: 'row',
-    gap: spacing.sm,
-  },
-  photoGridCell: {
-    flex: 1,
-    aspectRatio: PHOTO_ASPECT_RATIO,
+    alignSelf: 'center',
     position: 'relative',
   },
-  photoGridImage: {
+  photoSlotPlaceholder: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.xs,
+    backgroundColor: colors.panelBackground,
+    borderWidth: 1,
+    borderColor: colors.hairline,
+    borderStyle: 'dashed',
+  },
+  photoSlotPlaceholderPressed: {
+    backgroundColor: colors.hairline,
+  },
+  photoSlotImage: {
     width: '100%',
     height: '100%',
     borderRadius: radii.md,
     backgroundColor: colors.panelBackground,
   },
-  photoRow: {
-    marginBottom: spacing.md,
+  photoAddIcon: {
+    fontFamily: fonts.headingSemiBold,
+    fontSize: 22,
+    lineHeight: 24,
+    color: colors.inkSoft,
   },
-  photoThumbnailWrapper: {
-    marginRight: spacing.sm,
-  },
-  photoThumbnail: {
-    width: 96,
-    height: 96,
-    borderRadius: radii.md,
-    backgroundColor: colors.panelBackground,
+  photoAddLabel: {
+    fontFamily: fonts.bodySemiBold,
+    fontSize: 15,
+    color: colors.inkSoft,
   },
   photoDeleteButton: {
     position: 'absolute',
