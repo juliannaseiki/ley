@@ -7,6 +7,7 @@ import {
   Linking,
   Modal,
   PanResponder,
+  PixelRatio,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -22,7 +23,7 @@ import { supabase, useAuth } from '@ley/auth';
 import { searchPlaces, PlaceSearchResult } from '../lib/foursquarePlaces';
 import { SavedPlace } from '../types/place';
 
-const { height: SCREEN_HEIGHT } = Dimensions.get('window');
+const { height: SCREEN_HEIGHT, width: SCREEN_WIDTH } = Dimensions.get('window');
 // The peeked panel's visible strip is sized to end just above the add-place FAB (HomeScreen.tsx's
 // styles.addButton: bottom: insets.bottom + spacing.md, 56x56) rather than extending underneath
 // it — computed from that same footprint plus a little breathing room, not a fixed fraction of
@@ -47,10 +48,11 @@ function clamp(value: number, min: number, max: number): number {
 const SAVED_PLACE_COLUMNS = 'id, name, category, formatted_address, latitude, longitude';
 const PHOTO_BUCKET = 'saved-place-photos';
 const PHOTO_SIGNED_URL_TTL_SECONDS = 60 * 60;
-// Cap the longer side of an uploaded photo to this many pixels — camera originals (often
-// 3000-4000px+) are far larger than this panel ever displays them, so uploading them unresized
-// wastes upload/download bandwidth and slows down the thumbnail row for no visual benefit.
-const MAX_PHOTO_DIMENSION = 1600;
+// Cap the longer side of an uploaded photo to the device's own screen width in physical pixels —
+// camera originals (often 3000-4000px+) are far larger than that, so uploading them unresized
+// wastes upload/download bandwidth for no visual benefit. Device width (rather than a flat
+// constant) leaves room for a future full-width photo view to render these at native resolution.
+const MAX_PHOTO_DIMENSION = Math.round(SCREEN_WIDTH * PixelRatio.get());
 const PHOTO_COMPRESSION_QUALITY = 0.7;
 
 // Three resting heights the panel can snap to, ascending by how open the panel is — a plain
