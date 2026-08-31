@@ -1107,24 +1107,22 @@ const styles = StyleSheet.create({
   },
   savedPlaceCard: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'stretch',
     borderWidth: 1,
     borderColor: colors.hairline,
     borderRadius: radii.md,
-    padding: spacing.sm,
+    overflow: 'hidden',
   },
   savedPlaceCardPressed: {
     backgroundColor: colors.panelBackground,
   },
   savedPlacePhoto: {
-    width: 48,
-    height: 48,
-    borderRadius: radii.sm,
-    marginRight: spacing.sm,
+    width: 88,
     backgroundColor: colors.panelBackground,
   },
   savedPlaceTextGroup: {
     flex: 1,
+    padding: spacing.sm,
   },
   emptyState: {
     fontFamily: fonts.body,
