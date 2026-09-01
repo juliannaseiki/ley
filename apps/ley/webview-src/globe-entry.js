@@ -267,10 +267,13 @@ const LABEL_FADE_MS = 220;
 // Native via postMessage (see the RN<->WebView messaging section below) rather than baked in at
 // build time like the rest of the map, since this data is per-user and changes at runtime.
 const PIN_FLOWER_EMOJIS = ['🌸', '🌷', '🌹', '🌺', '🌻', '🌼'];
-const PIN_BUBBLE_SIZE = 34; // diameter of the bubble body, CSS px
-const PIN_BUBBLE_RADIUS = 10; // corner radius of the bubble body
-const PIN_TAIL_HEIGHT = 9; // gap between the bubble's bottom edge and the exact lat/lon point
-const PIN_FONT = `${Math.round(PIN_BUBBLE_SIZE * 0.55)}px -apple-system, BlinkMacSystemFont, system-ui, sans-serif`;
+const PIN_RADIUS = 15; // radius of the pin's circular head, CSS px
+const PIN_TIP_DISTANCE = 22; // distance from the circle's center to the tip that touches lat/lon
+// Placeholder solid fill (LEY-10) standing in for a real photo/emoji-tinted fill, which needs the
+// per-pin photo-loading plumbing from LEY-10's fuller design — this is just here to preview the
+// new pin shape and color.
+const PIN_FILL_COLOR = '#B7E4C7';
+const PIN_FONT = `${Math.round(PIN_RADIUS * 2 * 0.55)}px -apple-system, BlinkMacSystemFont, system-ui, sans-serif`;
 let savedPlacePins = []; // [{ id, lon, lat, emoji }] — set via the 'setSavedPlaces' RN message
 let pinHitboxes = []; // rebuilt every frame in drawSavedPlacePins; consumed by handleTap
 
@@ -283,21 +286,25 @@ function emojiForPlaceId(id) {
   return PIN_FLOWER_EMOJIS[hash % PIN_FLOWER_EMOJIS.length];
 }
 
-// Manual rounded-rect path (arcTo is far more broadly supported than ctx.roundRect) for the
-// bubble body below.
-function traceRoundedRectPath(cx, left, top, size, radius) {
-  const right = left + size;
-  const bottom = top + size;
+// Upside-down teardrop / classic map-marker silhouette: a circle (centered at cx, cyCenter) whose
+// bottom is pinched to an exact point (cx, tipY) via the two lines tangent to the circle from that
+// point, with the circle's own major arc (the long way around, through its top) filling the rest
+// of the outline. Tangent geometry: for an external point at distance d from a circle of radius r,
+// each tangent line meets the circle at angle acos(r / d) from the center-to-point axis.
+function traceTeardropPath(cx, x, cyCenter, radius, tipY) {
+  const d = tipY - cyCenter;
+  const alpha = Math.acos(radius / d);
+  const straightDown = Math.PI / 2;
+  const angle1 = straightDown - alpha;
+  const angle2 = straightDown + alpha;
+  const p1x = x + radius * Math.cos(angle1);
+  const p1y = cyCenter + radius * Math.sin(angle1);
+
   cx.beginPath();
-  cx.moveTo(left + radius, top);
-  cx.lineTo(right - radius, top);
-  cx.arcTo(right, top, right, top + radius, radius);
-  cx.lineTo(right, bottom - radius);
-  cx.arcTo(right, bottom, right - radius, bottom, radius);
-  cx.lineTo(left + radius, bottom);
-  cx.arcTo(left, bottom, left, bottom - radius, radius);
-  cx.lineTo(left, top + radius);
-  cx.arcTo(left, top, left + radius, top, radius);
+  cx.moveTo(x, tipY);
+  cx.lineTo(p1x, p1y);
+  cx.arc(x, cyCenter, radius, angle1, angle2, true);
+  cx.lineTo(x, tipY);
   cx.closePath();
 }
 
@@ -307,7 +314,7 @@ function drawSavedPlacePins() {
   pinHitboxes = [];
   if (savedPlacePins.length === 0) return;
 
-  const half = PIN_BUBBLE_SIZE / 2;
+  const pinHeight = PIN_TIP_DISTANCE + PIN_RADIUS;
   ctx.font = PIN_FONT;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -317,30 +324,19 @@ function drawSavedPlacePins() {
     const p = projection([pin.lon, pin.lat]);
     if (!p) continue;
     const [x, y] = p;
-    if (x < -half || x > width + half || y < -PIN_BUBBLE_SIZE || y > height + half) continue;
+    if (x < -PIN_RADIUS || x > width + PIN_RADIUS || y < -pinHeight || y > height + PIN_RADIUS)
+      continue;
 
-    const bubbleBottom = y - PIN_TAIL_HEIGHT;
-    const bubbleTop = bubbleBottom - PIN_BUBBLE_SIZE;
-    const left = x - half;
+    const cyCenter = y - PIN_TIP_DISTANCE;
 
-    // Tail: filled only (no stroke), so it reads as a seamless extension of the bubble above it
-    // rather than a separately outlined shape.
-    ctx.beginPath();
-    ctx.moveTo(x - 6, bubbleBottom - 1);
-    ctx.lineTo(x, y);
-    ctx.lineTo(x + 6, bubbleBottom - 1);
-    ctx.closePath();
-    ctx.fillStyle = '#FFFFFF';
-    ctx.fill();
-
-    traceRoundedRectPath(ctx, left, bubbleTop, PIN_BUBBLE_SIZE, PIN_BUBBLE_RADIUS);
-    ctx.fillStyle = '#FFFFFF';
+    traceTeardropPath(ctx, x, cyCenter, PIN_RADIUS, y);
+    ctx.fillStyle = PIN_FILL_COLOR;
     ctx.fill();
     ctx.lineWidth = 1;
     ctx.strokeStyle = THEME.landStroke;
     ctx.stroke();
 
-    ctx.fillText(pin.emoji, x, bubbleTop + half);
+    ctx.fillText(pin.emoji, x, cyCenter);
 
     pinHitboxes.push({
       id: pin.id,
@@ -348,7 +344,7 @@ function drawSavedPlacePins() {
       lat: pin.lat,
       x,
       y,
-      radius: half + PIN_TAIL_HEIGHT + 6,
+      radius: pinHeight + 6,
     });
   }
 
