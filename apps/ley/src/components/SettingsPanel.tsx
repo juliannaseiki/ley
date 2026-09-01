@@ -38,7 +38,7 @@ export function SettingsPanel({ visible, onClose, onLogout }: Props) {
   const [backdropOpacity] = useState(() => new Animated.Value(0));
   const [sheetTranslateY] = useState(() => new Animated.Value(SCREEN_HEIGHT));
   const [name, setName] = useState('');
-  const [initialName, setInitialName] = useState('');
+  const [isEditingName, setIsEditingName] = useState(false);
   const [savingName, setSavingName] = useState(false);
   const [nameError, setNameError] = useState<string | null>(null);
 
@@ -69,16 +69,16 @@ export function SettingsPanel({ visible, onClose, onLogout }: Props) {
 
   useEffect(() => {
     if (!visible || !session?.user) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setIsEditingName(false);
+    setNameError(null);
     let cancelled = false;
     supabase
       .from('profiles')
       .select('name')
       .eq('id', session.user.id)
       .then(({ data }) => {
-        if (cancelled) return;
-        const fetchedName = data?.[0]?.name ?? '';
-        setName(fetchedName);
-        setInitialName(fetchedName);
+        if (!cancelled) setName(data?.[0]?.name ?? '');
       });
     return () => {
       cancelled = true;
@@ -104,7 +104,16 @@ export function SettingsPanel({ visible, onClose, onLogout }: Props) {
       return;
     }
     setName(trimmed);
-    setInitialName(trimmed);
+    setIsEditingName(false);
+  };
+
+  const handleNameIconPress = () => {
+    if (isEditingName) {
+      handleSaveName();
+    } else {
+      setNameError(null);
+      setIsEditingName(true);
+    }
   };
 
   return (
@@ -129,30 +138,28 @@ export function SettingsPanel({ visible, onClose, onLogout }: Props) {
           </Pressable>
         </View>
         <View style={styles.nameSection}>
-          <Text style={styles.nameLabel}>Name</Text>
-          <TextInput
-            placeholder="Add your name"
-            placeholderTextColor={colors.inkSoft}
-            value={name}
-            onChangeText={setName}
-            style={styles.nameInput}
-          />
-          {nameError ? <Text style={styles.nameError}>{nameError}</Text> : null}
-          <Pressable
-            onPress={handleSaveName}
-            disabled={savingName || name.trim() === initialName}
-            style={({ pressed }) => [
-              styles.saveButton,
-              pressed && styles.saveButtonPressed,
-              (savingName || name.trim() === initialName) && styles.saveButtonDisabled,
-            ]}
-          >
-            {savingName ? (
-              <ActivityIndicator color={colors.inkSoft} />
+          <View style={styles.nameRow}>
+            {isEditingName ? (
+              <TextInput
+                placeholder="Add your name"
+                placeholderTextColor={colors.inkSoft}
+                value={name}
+                onChangeText={setName}
+                autoFocus
+                style={styles.nameInput}
+              />
             ) : (
-              <Text style={styles.saveButtonLabel}>Save</Text>
+              <Text style={styles.nameValue}>{name || 'Add your name'}</Text>
             )}
-          </Pressable>
+            <Pressable onPress={handleNameIconPress} style={styles.nameEditButton} hitSlop={12}>
+              {savingName ? (
+                <ActivityIndicator color={colors.inkSoft} />
+              ) : (
+                <Text style={styles.nameEditIcon}>{isEditingName ? '✓' : '✎'}</Text>
+              )}
+            </Pressable>
+          </View>
+          {nameError ? <Text style={styles.nameError}>{nameError}</Text> : null}
         </View>
         <Pressable
           onPress={handleLogout}
@@ -243,47 +250,39 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: colors.hairline,
   },
-  nameLabel: {
+  nameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  nameValue: {
+    flex: 1,
     fontFamily: fonts.bodyMedium,
-    fontSize: 13,
-    color: colors.inkSoft,
-    marginBottom: spacing.xs,
+    fontSize: 16,
+    color: colors.ink,
   },
   nameInput: {
+    flex: 1,
     fontFamily: fonts.body,
     fontSize: 16,
     color: colors.ink,
-    borderWidth: 1,
-    borderColor: colors.hairline,
-    borderRadius: radii.pill,
-    paddingHorizontal: spacing.md,
-    paddingVertical: 12,
-    backgroundColor: colors.panelBackground,
-    marginBottom: spacing.sm,
+    padding: 0,
+  },
+  nameEditButton: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  nameEditIcon: {
+    fontFamily: fonts.headingSemiBold,
+    fontSize: 18,
+    color: colors.inkSoft,
   },
   nameError: {
     fontFamily: fonts.body,
     fontSize: 13,
     color: colors.error,
-    marginBottom: spacing.sm,
-  },
-  saveButton: {
-    borderWidth: 1,
-    borderColor: colors.hairline,
-    borderRadius: radii.pill,
-    paddingVertical: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  saveButtonPressed: {
-    backgroundColor: colors.hairline,
-  },
-  saveButtonDisabled: {
-    opacity: 0.6,
-  },
-  saveButtonLabel: {
-    fontFamily: fonts.bodySemiBold,
-    fontSize: 15,
-    color: colors.ink,
+    marginTop: spacing.xs,
   },
 });
