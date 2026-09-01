@@ -22,6 +22,7 @@ type Props = {
   visible: boolean;
   onClose: () => void;
   onLogout: () => void;
+  onNameSaved?: (name: string) => void;
 };
 
 // A plain RN Modal — its own native layer above everything else, so no zIndex coordination needed
@@ -31,7 +32,7 @@ type Props = {
 // lags one tick behind `visible` on close specifically so the closing animation has something to
 // play before the native Modal actually unmounts — Modal's `visible` prop has no exit-animation
 // hook of its own.
-export function SettingsPanel({ visible, onClose, onLogout }: Props) {
+export function SettingsPanel({ visible, onClose, onLogout, onNameSaved }: Props) {
   const { session } = useAuth();
   const insets = useSafeAreaInsets();
   const [modalMounted, setModalMounted] = useState(visible);
@@ -105,6 +106,7 @@ export function SettingsPanel({ visible, onClose, onLogout }: Props) {
     }
     setName(trimmed);
     setIsEditingName(false);
+    onNameSaved?.(trimmed);
   };
 
   const handleNameIconPress = () => {
