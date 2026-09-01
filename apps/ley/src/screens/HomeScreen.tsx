@@ -16,6 +16,10 @@ function firstNameFromEmail(email: string): string {
   return first.charAt(0).toUpperCase() + first.slice(1);
 }
 
+function firstNameFromFullName(name: string): string {
+  return name.trim().split(/\s+/)[0];
+}
+
 export function HomeScreen() {
   const insets = useSafeAreaInsets();
   const { session, signOut } = useAuth();
@@ -27,8 +31,24 @@ export function HomeScreen() {
   const [savedPlaces, setSavedPlaces] = useState<SavedPlace[]>([]);
   const [savedPlacesLoading, setSavedPlacesLoading] = useState(false);
   const [savedPlacesError, setSavedPlacesError] = useState<string | null>(null);
+  const [profileName, setProfileName] = useState<string | null>(null);
 
   const userId = session?.user?.id;
+
+  useEffect(() => {
+    if (!userId) return;
+    let cancelled = false;
+    supabase
+      .from('profiles')
+      .select('name')
+      .eq('id', userId)
+      .then(({ data }) => {
+        if (!cancelled) setProfileName(data?.[0]?.name || null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
 
   useEffect(() => {
     if (!userId) return;
@@ -89,16 +109,23 @@ export function HomeScreen() {
   };
 
   const email = session?.user?.email;
+  // Profile name (set in Settings) wins when present; email-derived first name is only a fallback
+  // for users who haven't set one yet.
+  const displayFirstName = profileName
+    ? firstNameFromFullName(profileName)
+    : email
+      ? firstNameFromEmail(email)
+      : null;
   const panelTitle = addingPlace
     ? 'Add a place'
     : selectedSavedPlace
       ? selectedSavedPlace.name
-      : email
-        ? `Welcome ${firstNameFromEmail(email)}`
+      : displayFirstName
+        ? `Welcome ${displayFirstName}`
         : 'Welcome';
   // Placeholder avatar until real profile pictures exist — the same first-name derivation "Welcome
   // {name}" already uses, just reduced to its initial, so the two stay consistent with each other.
-  const avatarInitial = email ? firstNameFromEmail(email).charAt(0).toUpperCase() : '?';
+  const avatarInitial = displayFirstName ? displayFirstName.charAt(0).toUpperCase() : '?';
 
   return (
     <View style={styles.container}>
@@ -151,6 +178,7 @@ export function HomeScreen() {
         visible={settingsVisible}
         onClose={() => setSettingsVisible(false)}
         onLogout={() => signOut()}
+        onNameSaved={setProfileName}
       />
     </View>
   );
