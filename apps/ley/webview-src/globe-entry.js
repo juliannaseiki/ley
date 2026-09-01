@@ -332,7 +332,9 @@ function drawSavedPlacePins() {
     traceTeardropPath(ctx, x, cyCenter, PIN_RADIUS, y);
     ctx.fillStyle = PIN_FILL_COLOR;
     ctx.fill();
-    ctx.lineWidth = 1;
+    // 1 device pixel (not 1 CSS px — the canvas transform is already dpr-scaled, see resize())
+    // for a true hairline stroke, same spirit as RN's own StyleSheet.hairlineWidth elsewhere.
+    ctx.lineWidth = 1 / dpr;
     ctx.strokeStyle = THEME.landStroke;
     ctx.stroke();
 
