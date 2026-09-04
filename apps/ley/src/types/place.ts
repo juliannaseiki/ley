@@ -5,4 +5,5 @@ export type SavedPlace = {
   formatted_address: string | null;
   latitude: number;
   longitude: number;
+  pin_photo_id: string | null;
 };

@@ -45,7 +45,7 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
-const SAVED_PLACE_COLUMNS = 'id, name, category, formatted_address, latitude, longitude';
+const SAVED_PLACE_COLUMNS = 'id, name, category, formatted_address, latitude, longitude, pin_photo_id';
 const PHOTO_BUCKET = 'saved-place-photos';
 const PHOTO_SIGNED_URL_TTL_SECONDS = 60 * 60;
 const SAVED_PLACE_CARD_HEIGHT = 96;
@@ -117,6 +117,7 @@ type Props = {
   savedPlacesError: string | null;
   onPlaceSaved: (place: SavedPlace) => void;
   onPlaceDeleted: (placeId: string) => void;
+  onPlaceUpdated: (place: SavedPlace) => void;
   onBack: () => void;
   onSelectPlace: (place: SavedPlace) => void;
 };
@@ -131,6 +132,7 @@ export function PlaceDetailPanel({
   savedPlacesError,
   onPlaceSaved,
   onPlaceDeleted,
+  onPlaceUpdated,
   onBack,
   onSelectPlace,
 }: Props) {
@@ -195,6 +197,8 @@ export function PlaceDetailPanel({
   const [confirmingDeletePhoto, setConfirmingDeletePhoto] = useState<SavedPlacePhoto | null>(null);
   const [deletingPhoto, setDeletingPhoto] = useState(false);
   const [deletePhotoError, setDeletePhotoError] = useState<string | null>(null);
+  const [settingPinPhoto, setSettingPinPhoto] = useState(false);
+  const [pinPhotoError, setPinPhotoError] = useState<string | null>(null);
   const [savedPlacePhotoUrls, setSavedPlacePhotoUrls] = useState<Record<string, string>>({});
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -216,9 +220,12 @@ export function PlaceDetailPanel({
   // a summary. Adjusted during render (React's recommended pattern for state that depends on a
   // prop change) rather than an effect, since setState-in-effect on every mount triggers a
   // needless extra render.
-  const [prevSelectedSavedPlace, setPrevSelectedSavedPlace] = useState(selectedSavedPlace);
-  if (selectedSavedPlace !== prevSelectedSavedPlace) {
-    setPrevSelectedSavedPlace(selectedSavedPlace);
+  // Compared by id, not object identity — onPlaceUpdated (e.g. setting a pin photo) hands down a
+  // new SavedPlace object for the same place, which shouldn't reset edit state the way actually
+  // switching to a different place (a pin tap) should.
+  const [prevSelectedSavedPlaceId, setPrevSelectedSavedPlaceId] = useState(selectedSavedPlace?.id ?? null);
+  if ((selectedSavedPlace?.id ?? null) !== prevSelectedSavedPlaceId) {
+    setPrevSelectedSavedPlaceId(selectedSavedPlace?.id ?? null);
     if (selectedSavedPlace && expansion === 'peeked') setExpansion('half');
     setIsEditing(false);
     setConfirmingDelete(false);
@@ -226,6 +233,7 @@ export function PlaceDetailPanel({
     setUploadError(null);
     setConfirmingDeletePhoto(null);
     setDeletePhotoError(null);
+    setPinPhotoError(null);
   }
 
   const [prevAddingPlace, setPrevAddingPlace] = useState(addingPlace);
@@ -592,6 +600,28 @@ export function PlaceDetailPanel({
         return next;
       });
     }
+    // The FK's `on delete set null` already cleared this server-side — mirror it locally so
+    // effectivePinPhotoId immediately falls back to the new earliest-uploaded photo instead of
+    // pointing at the id of a photo that no longer exists until the next full reload.
+    if (selectedSavedPlace && selectedSavedPlace.pin_photo_id === deletedId) {
+      onPlaceUpdated({ ...selectedSavedPlace, pin_photo_id: null });
+    }
+  };
+
+  const handleSetPinPhoto = async (photo: SavedPlacePhoto) => {
+    if (!selectedSavedPlace || settingPinPhoto || selectedSavedPlace.pin_photo_id === photo.id) return;
+    setSettingPinPhoto(true);
+    setPinPhotoError(null);
+    const { error } = await supabase
+      .from('saved_places')
+      .update({ pin_photo_id: photo.id })
+      .eq('id', selectedSavedPlace.id);
+    setSettingPinPhoto(false);
+    if (error) {
+      setPinPhotoError(error.message);
+      return;
+    }
+    onPlaceUpdated({ ...selectedSavedPlace, pin_photo_id: photo.id });
   };
 
   const handleSearchChange = (text: string) => {
@@ -631,6 +661,10 @@ export function PlaceDetailPanel({
     }
     if (data) onPlaceSaved(data);
   };
+
+  // photos is ordered earliest-first (see loadPhotos), so photos[0] is exactly "the
+  // earliest-uploaded photo" the null default refers to.
+  const effectivePinPhotoId = selectedSavedPlace?.pin_photo_id ?? photos[0]?.id ?? null;
 
   return (
     <Animated.View
@@ -768,6 +802,23 @@ export function PlaceDetailPanel({
                               <Text style={styles.photoDeleteButtonLabel}>×</Text>
                             </Pressable>
                           ) : null}
+                          {isEditing && photos.length > 1 ? (
+                            <Pressable
+                              onPress={() => handleSetPinPhoto(photo)}
+                              disabled={settingPinPhoto}
+                              style={styles.photoPinButton}
+                              hitSlop={8}
+                            >
+                              <Text
+                                style={[
+                                  styles.photoPinButtonLabel,
+                                  photo.id !== effectivePinPhotoId && styles.photoPinButtonLabelInactive,
+                                ]}
+                              >
+                                📌
+                              </Text>
+                            </Pressable>
+                          ) : null}
                         </View>
                       ) : (
                         <View key={cellIndex} style={[styles.photoGridCell, styles.photoGridCellEmpty]} />
@@ -777,6 +828,8 @@ export function PlaceDetailPanel({
                 ))}
               </View>
             ) : null}
+
+            {pinPhotoError ? <Text style={styles.searchError}>{pinPhotoError}</Text> : null}
 
             {isEditing ? (
               <>
@@ -1063,6 +1116,25 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 16,
     color: colors.inkSoft,
+  },
+  photoPinButton: {
+    position: 'absolute',
+    bottom: -6,
+    left: -6,
+    width: 24,
+    height: 24,
+    borderRadius: radii.pill,
+    backgroundColor: colors.white,
+    borderWidth: 1,
+    borderColor: colors.hairline,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  photoPinButtonLabel: {
+    fontSize: 12,
+  },
+  photoPinButtonLabelInactive: {
+    opacity: 0.35,
   },
   mapsButton: {
     borderWidth: 1,
