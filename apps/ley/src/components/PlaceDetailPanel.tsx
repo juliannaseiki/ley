@@ -773,7 +773,7 @@ export function PlaceDetailPanel({
                 style={styles.notesInput}
               />
             ) : notes ? (
-              <Text style={styles.notesInput}>{notes}</Text>
+              <Text style={styles.notesText}>{notes}</Text>
             ) : null}
 
             {isEditing ? (
@@ -1084,8 +1084,20 @@ const styles = StyleSheet.create({
     minHeight: 80,
     textAlignVertical: 'top',
     textAlign: 'left',
-    borderWidth: 0,
-    paddingHorizontal: 0,
+    borderWidth: 1,
+    borderColor: colors.hairline,
+    borderRadius: radii.md,
+    backgroundColor: colors.panelBackground,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.md,
+    marginBottom: spacing.md,
+  },
+  notesText: {
+    fontFamily: fonts.body,
+    fontSize: 16,
+    color: colors.ink,
+    textAlign: 'left',
+    marginBottom: spacing.md,
   },
   searchInput: {
     fontFamily: fonts.body,
