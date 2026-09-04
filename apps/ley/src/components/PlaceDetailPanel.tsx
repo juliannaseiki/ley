@@ -72,6 +72,9 @@ type SavedPlacePhoto = {
 // constant) leaves room for a future full-width photo view to render these at native resolution.
 const MAX_PHOTO_DIMENSION = Math.round(SCREEN_WIDTH * PixelRatio.get());
 const PHOTO_COMPRESSION_QUALITY = 0.7;
+// The upload cap itself — how the resulting photos actually lay out (LEY-50) is a separate concern
+// from how many a place can have (this constant).
+const MAX_PHOTOS = 4;
 
 // Three resting heights the panel can snap to, ascending by how open the panel is — a plain
 // swipe-to-half default, with a further swipe up (or a fast flick, see onPanResponderRelease
@@ -162,7 +165,7 @@ export function PlaceDetailPanel({
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const [photo, setPhoto] = useState<SavedPlacePhoto | null>(null);
+  const [photos, setPhotos] = useState<SavedPlacePhoto[]>([]);
   const [confirmingDeletePhoto, setConfirmingDeletePhoto] = useState<SavedPlacePhoto | null>(null);
   const [deletingPhoto, setDeletingPhoto] = useState(false);
   const [deletePhotoError, setDeletePhotoError] = useState<string | null>(null);
@@ -259,32 +262,34 @@ export function PlaceDetailPanel({
     };
   }, [trimmedQuery, queryTooShort, addingPlace, selectedPlace]);
 
-  const loadPhoto = async (placeId: string): Promise<SavedPlacePhoto | null> => {
+  const loadPhotos = async (placeId: string): Promise<SavedPlacePhoto[]> => {
     const { data: rows } = await supabase
       .from('saved_place_photos')
       .select('id, storage_path')
       .eq('saved_place_id', placeId)
-      .order('created_at', { ascending: false })
-      .limit(1);
-    const row = rows?.[0];
-    if (!row) return null;
+      .order('created_at', { ascending: true });
+    if (!rows || rows.length === 0) return [];
     const { data: signedUrls } = await supabase.storage
       .from(PHOTO_BUCKET)
-      .createSignedUrls([row.storage_path], PHOTO_SIGNED_URL_TTL_SECONDS);
-    const url = signedUrls?.[0]?.signedUrl;
-    if (!url) return null;
-    return { id: row.id, storagePath: row.storage_path, url };
+      .createSignedUrls(
+        rows.map((row) => row.storage_path),
+        PHOTO_SIGNED_URL_TTL_SECONDS
+      );
+    const urlByPath = new Map((signedUrls ?? []).map((entry) => [entry.path, entry.signedUrl]));
+    return rows
+      .map((row) => ({ id: row.id, storagePath: row.storage_path, url: urlByPath.get(row.storage_path) }))
+      .filter((photo): photo is SavedPlacePhoto => Boolean(photo.url));
   };
 
   useEffect(() => {
     if (!selectedSavedPlace) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
-      setPhoto(null);
+      setPhotos([]);
       return;
     }
     let cancelled = false;
-    loadPhoto(selectedSavedPlace.id).then((loaded) => {
-      if (!cancelled) setPhoto(loaded);
+    loadPhotos(selectedSavedPlace.id).then((loaded) => {
+      if (!cancelled) setPhotos(loaded);
     });
     return () => {
       cancelled = true;
@@ -452,63 +457,78 @@ export function PlaceDetailPanel({
   };
 
   const handleAddPhoto = async () => {
-    if (!selectedSavedPlace || !session?.user || uploadingPhoto || photo) return;
+    if (!selectedSavedPlace || !session?.user || uploadingPhoto) return;
+    const remainingSlots = MAX_PHOTOS - photos.length;
+    if (remainingSlots <= 0) return;
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
-      setUploadError('Photo library access is required to add a photo.');
+      setUploadError('Photo library access is required to add photos.');
       return;
     }
-    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.7 });
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      quality: 0.7,
+      allowsMultipleSelection: true,
+      selectionLimit: remainingSlots,
+    });
     if (result.canceled) return;
-    const asset = result.assets[0];
     setUploadingPhoto(true);
     setUploadError(null);
     const userId = session.user.id;
     const placeId = selectedSavedPlace.id;
-    let uploadUri = asset.uri;
-    let contentType = asset.mimeType ?? 'image/jpeg';
-    const longerSide = Math.max(asset.width, asset.height);
-    if (longerSide > MAX_PHOTO_DIMENSION) {
-      const scale = MAX_PHOTO_DIMENSION / longerSide;
-      const context = ImageManipulator.manipulate(asset.uri);
-      context.resize({
-        width: Math.round(asset.width * scale),
-        height: Math.round(asset.height * scale),
+    for (const asset of result.assets) {
+      let uploadUri = asset.uri;
+      let contentType = asset.mimeType ?? 'image/jpeg';
+      const longerSide = Math.max(asset.width, asset.height);
+      if (longerSide > MAX_PHOTO_DIMENSION) {
+        const scale = MAX_PHOTO_DIMENSION / longerSide;
+        const context = ImageManipulator.manipulate(asset.uri);
+        context.resize({
+          width: Math.round(asset.width * scale),
+          height: Math.round(asset.height * scale),
+        });
+        const rendered = await context.renderAsync();
+        const resized = await rendered.saveAsync({
+          format: SaveFormat.JPEG,
+          compress: PHOTO_COMPRESSION_QUALITY,
+        });
+        uploadUri = resized.uri;
+        contentType = 'image/jpeg';
+      }
+      const arrayBuffer = await fetch(uploadUri).then((res) => res.arrayBuffer());
+      const extension = contentType === 'image/jpeg' ? 'jpg' : (uploadUri.split('.').pop() ?? 'jpg');
+      // A random suffix (not just Date.now()) keeps paths unique when uploading several photos
+      // from this same loop in quick succession, which can land in the same millisecond.
+      const path = `${userId}/${placeId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${extension}`;
+      const { error: uploadErr } = await supabase.storage
+        .from(PHOTO_BUCKET)
+        .upload(path, arrayBuffer, { contentType });
+      if (uploadErr) {
+        setUploadingPhoto(false);
+        setUploadError(uploadErr.message);
+        setPhotos(await loadPhotos(placeId));
+        return;
+      }
+      const { error: insertErr } = await supabase.from('saved_place_photos').insert({
+        saved_place_id: placeId,
+        user_id: userId,
+        storage_path: path,
       });
-      const rendered = await context.renderAsync();
-      const resized = await rendered.saveAsync({
-        format: SaveFormat.JPEG,
-        compress: PHOTO_COMPRESSION_QUALITY,
-      });
-      uploadUri = resized.uri;
-      contentType = 'image/jpeg';
+      if (insertErr) {
+        setUploadingPhoto(false);
+        setUploadError(insertErr.message);
+        setPhotos(await loadPhotos(placeId));
+        return;
+      }
     }
-    const arrayBuffer = await fetch(uploadUri).then((res) => res.arrayBuffer());
-    const extension = contentType === 'image/jpeg' ? 'jpg' : (uploadUri.split('.').pop() ?? 'jpg');
-    const path = `${userId}/${placeId}/${Date.now()}.${extension}`;
-    const { error: uploadErr } = await supabase.storage
-      .from(PHOTO_BUCKET)
-      .upload(path, arrayBuffer, { contentType });
-    if (uploadErr) {
-      setUploadingPhoto(false);
-      setUploadError(uploadErr.message);
-      return;
-    }
-    const { error: insertErr } = await supabase.from('saved_place_photos').insert({
-      saved_place_id: placeId,
-      user_id: userId,
-      storage_path: path,
-    });
-    if (insertErr) {
-      setUploadingPhoto(false);
-      setUploadError(insertErr.message);
-      return;
-    }
-    const loaded = await loadPhoto(placeId);
+    const loaded = await loadPhotos(placeId);
     setUploadingPhoto(false);
-    setPhoto(loaded);
-    if (loaded) {
-      setSavedPlacePhotoUrls((prev) => ({ ...prev, [placeId]: loaded.url }));
+    setPhotos(loaded);
+    // The list-view thumbnail (savedPlacePhotoUrls) always shows the most recently uploaded photo
+    // for a place, matching the "newest first" ordering that effect's own query uses.
+    const latest = loaded[loaded.length - 1];
+    if (latest) {
+      setSavedPlacePhotoUrls((prev) => ({ ...prev, [placeId]: latest.url }));
     }
   };
 
@@ -533,12 +553,16 @@ export function PlaceDetailPanel({
       setDeletePhotoError(deleteErr.message);
       return;
     }
-    setPhoto(null);
+    const deletedId = confirmingDeletePhoto.id;
+    setPhotos((prev) => prev.filter((photo) => photo.id !== deletedId));
     setConfirmingDeletePhoto(null);
-    if (selectedSavedPlace) {
+    if (selectedSavedPlace && confirmingDeletePhoto.storagePath === photos[photos.length - 1]?.storagePath) {
       setSavedPlacePhotoUrls((prev) => {
         const next = { ...prev };
-        delete next[selectedSavedPlace.id];
+        const remaining = photos.filter((photo) => photo.id !== deletedId);
+        const newLatest = remaining[remaining.length - 1];
+        if (newLatest) next[selectedSavedPlace.id] = newLatest.url;
+        else delete next[selectedSavedPlace.id];
         return next;
       });
     }
@@ -697,41 +721,46 @@ export function PlaceDetailPanel({
               </Text>
             ) : null}
 
-            {photo ? (
-              <View style={styles.photoSlot}>
-                <Image source={{ uri: photo.url }} style={styles.photoSlotImage} resizeMode="cover" />
-                {isEditing ? (
-                  <Pressable
-                    onPress={() => setConfirmingDeletePhoto(photo)}
-                    style={styles.photoDeleteButton}
-                    hitSlop={8}
-                  >
-                    <Text style={styles.photoDeleteButtonLabel}>×</Text>
-                  </Pressable>
-                ) : null}
+            {photos.length > 0 ? (
+              <View style={styles.photoGrid}>
+                {photos.map((photo) => (
+                  <View key={photo.id} style={styles.photoGridTile}>
+                    <Image source={{ uri: photo.url }} style={styles.photoGridImage} resizeMode="cover" />
+                    {isEditing ? (
+                      <Pressable
+                        onPress={() => setConfirmingDeletePhoto(photo)}
+                        style={styles.photoDeleteButton}
+                        hitSlop={8}
+                      >
+                        <Text style={styles.photoDeleteButtonLabel}>×</Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
+                ))}
               </View>
-            ) : isEditing ? (
-              <Pressable
-                onPress={handleAddPhoto}
-                disabled={uploadingPhoto}
-                style={({ pressed }) => [
-                  styles.photoSlot,
-                  styles.photoSlotPlaceholder,
-                  pressed && styles.photoSlotPlaceholderPressed,
-                ]}
-              >
-                {uploadingPhoto ? (
-                  <ActivityIndicator color={colors.inkSoft} />
-                ) : (
-                  <>
-                    <Text style={styles.photoAddIcon}>+</Text>
-                    <Text style={styles.photoAddLabel}>Add photo</Text>
-                  </>
-                )}
-              </Pressable>
             ) : null}
 
-            {uploadError ? <Text style={styles.searchError}>{uploadError}</Text> : null}
+            {isEditing ? (
+              <>
+                <Pressable
+                  onPress={handleAddPhoto}
+                  disabled={uploadingPhoto || photos.length >= MAX_PHOTOS}
+                  style={({ pressed }) => [
+                    styles.mapsButton,
+                    pressed && styles.mapsButtonPressed,
+                    (uploadingPhoto || photos.length >= MAX_PHOTOS) && styles.addPlaceButtonDisabled,
+                  ]}
+                >
+                  {uploadingPhoto ? (
+                    <ActivityIndicator color={colors.inkSoft} />
+                  ) : (
+                    <Text style={styles.mapsButtonLabel}>Add photos</Text>
+                  )}
+                </Pressable>
+
+                {uploadError ? <Text style={styles.searchError}>{uploadError}</Text> : null}
+              </>
+            ) : null}
 
             {isEditing ? (
               <TextInput
@@ -744,7 +773,7 @@ export function PlaceDetailPanel({
                 style={styles.notesInput}
               />
             ) : notes ? (
-              <Text style={styles.notesInput}>{notes}</Text>
+              <Text style={styles.notesText}>{notes}</Text>
             ) : null}
 
             {isEditing ? (
@@ -947,43 +976,25 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: spacing.md,
   },
-  photoSlot: {
-    width: '85%',
+  // A plain two-column wrap grid — not the fixed 1/2/3/4-specific layout LEY-37/42 built (that's
+  // being reworked in LEY-50), just enough to show every uploaded photo at a consistent size.
+  photoGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    marginBottom: spacing.md,
+  },
+  photoGridTile: {
+    width: '48%',
     aspectRatio: 1,
     borderRadius: radii.md,
-    marginBottom: spacing.md,
-    alignSelf: 'center',
     position: 'relative',
   },
-  photoSlotPlaceholder: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: spacing.xs,
-    backgroundColor: colors.panelBackground,
-    borderWidth: 1,
-    borderColor: colors.hairline,
-    borderStyle: 'dashed',
-  },
-  photoSlotPlaceholderPressed: {
-    backgroundColor: colors.hairline,
-  },
-  photoSlotImage: {
+  photoGridImage: {
     width: '100%',
     height: '100%',
     borderRadius: radii.md,
     backgroundColor: colors.panelBackground,
-  },
-  photoAddIcon: {
-    fontFamily: fonts.headingSemiBold,
-    fontSize: 22,
-    lineHeight: 24,
-    color: colors.inkSoft,
-  },
-  photoAddLabel: {
-    fontFamily: fonts.bodySemiBold,
-    fontSize: 15,
-    color: colors.inkSoft,
   },
   photoDeleteButton: {
     position: 'absolute',
@@ -1073,8 +1084,20 @@ const styles = StyleSheet.create({
     minHeight: 80,
     textAlignVertical: 'top',
     textAlign: 'left',
-    borderWidth: 0,
-    paddingHorizontal: 0,
+    borderWidth: 1,
+    borderColor: colors.hairline,
+    borderRadius: radii.md,
+    backgroundColor: colors.panelBackground,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.md,
+    marginBottom: spacing.md,
+  },
+  notesText: {
+    fontFamily: fonts.body,
+    fontSize: 16,
+    color: colors.ink,
+    textAlign: 'left',
+    marginBottom: spacing.md,
   },
   searchInput: {
     fontFamily: fonts.body,
