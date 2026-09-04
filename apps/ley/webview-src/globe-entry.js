@@ -269,13 +269,37 @@ const LABEL_FADE_MS = 220;
 const PIN_FLOWER_EMOJIS = ['🌸', '🌷', '🌹', '🌺', '🌻', '🌼'];
 const PIN_RADIUS = 15; // radius of the pin's circular head, CSS px
 const PIN_TIP_DISTANCE = 22; // distance from the circle's center to the tip that touches lat/lon
-// Placeholder solid fill (LEY-10) standing in for a real photo/emoji-tinted fill, which needs the
-// per-pin photo-loading plumbing from LEY-10's fuller design — this is just here to preview the
-// new pin shape and color.
+// Solid fallback fill for places with no pin photo yet (or whose photo hasn't finished loading —
+// see getPinImage below); once a photo is available it clip-fills the pin's head instead.
 const PIN_FILL_COLOR = '#B7E4C7';
 const PIN_FONT = `${Math.round(PIN_RADIUS * 2 * 0.55)}px -apple-system, BlinkMacSystemFont, system-ui, sans-serif`;
-let savedPlacePins = []; // [{ id, lon, lat, emoji }] — set via the 'setSavedPlaces' RN message
+let savedPlacePins = []; // [{ id, lon, lat, emoji, photoUrl }] — set via the 'setSavedPlaces' RN message
 let pinHitboxes = []; // rebuilt every frame in drawSavedPlacePins; consumed by handleTap
+
+// Pin photos load async and are cached by URL (a signed URL, so also naturally invalidated
+// whenever RN pushes a fresh setSavedPlaces with a re-signed one) — drawSavedPlacePins itself
+// stays synchronous, falling back to the flower-emoji fill for a pin whose image isn't in the
+// 'loaded' state yet, and re-rendering once it is so the photo pops in in place.
+const pinImageCache = new Map(); // url -> { status: 'loading' | 'loaded' | 'error', image }
+
+function getPinImage(url) {
+  if (!url) return null;
+  let entry = pinImageCache.get(url);
+  if (entry) return entry.status === 'loaded' ? entry.image : null;
+  entry = { status: 'loading', image: null };
+  pinImageCache.set(url, entry);
+  const image = new Image();
+  image.onload = () => {
+    entry.status = 'loaded';
+    entry.image = image;
+    render();
+  };
+  image.onerror = () => {
+    entry.status = 'error';
+  };
+  image.src = url;
+  return null;
+}
 
 // A stable (not random-per-frame) emoji per place, so a given pin always shows the same flower —
 // derived from the place id itself rather than stored separately, so there's nothing to keep in
@@ -328,17 +352,32 @@ function drawSavedPlacePins() {
       continue;
 
     const cyCenter = y - PIN_TIP_DISTANCE;
+    const image = getPinImage(pin.photoUrl);
 
     traceTeardropPath(ctx, x, cyCenter, PIN_RADIUS, y);
-    ctx.fillStyle = PIN_FILL_COLOR;
-    ctx.fill();
+    if (image) {
+      ctx.save();
+      ctx.clip();
+      // Cover-fit into the pin's circular head (object-fit: cover, in canvas terms) — scale by
+      // whichever dimension needs it more so the image fills the circle with no letterboxing,
+      // cropping the overhanging side instead.
+      const diameter = PIN_RADIUS * 2;
+      const coverScale = Math.max(diameter / image.width, diameter / image.height);
+      const drawWidth = image.width * coverScale;
+      const drawHeight = image.height * coverScale;
+      ctx.drawImage(image, x - drawWidth / 2, cyCenter - drawHeight / 2, drawWidth, drawHeight);
+      ctx.restore();
+    } else {
+      ctx.fillStyle = PIN_FILL_COLOR;
+      ctx.fill();
+    }
     // 1 device pixel (not 1 CSS px — the canvas transform is already dpr-scaled, see resize())
     // for a true hairline stroke, same spirit as RN's own StyleSheet.hairlineWidth elsewhere.
     ctx.lineWidth = 1 / dpr;
     ctx.strokeStyle = THEME.landStroke;
     ctx.stroke();
 
-    ctx.fillText(pin.emoji, x, cyCenter);
+    if (!image) ctx.fillText(pin.emoji, x, cyCenter);
 
     pinHitboxes.push({
       id: pin.id,
@@ -1142,6 +1181,7 @@ function handleRNMessage(event) {
       lon: place.lon,
       lat: place.lat,
       emoji: emojiForPlaceId(place.id),
+      photoUrl: typeof place.photoUrl === 'string' ? place.photoUrl : null,
     }));
     render();
   } else if (
