@@ -741,20 +741,6 @@ export function PlaceDetailPanel({
             ) : null}
 
             {isEditing ? (
-              <TextInput
-                placeholder="Add a note about this place…"
-                placeholderTextColor={colors.inkSoft}
-                value={notes}
-                onChangeText={setNotes}
-                multiline
-                autoFocus
-                style={styles.notesInput}
-              />
-            ) : notes ? (
-              <Text style={styles.notesInput}>{notes}</Text>
-            ) : null}
-
-            {isEditing ? (
               <>
                 <Pressable
                   onPress={handleAddPhoto}
@@ -773,18 +759,34 @@ export function PlaceDetailPanel({
                 </Pressable>
 
                 {uploadError ? <Text style={styles.searchError}>{uploadError}</Text> : null}
-
-                <Pressable
-                  onPress={() => setConfirmingDelete(true)}
-                  style={({ pressed }) => [
-                    styles.mapsButton,
-                    styles.deleteButton,
-                    pressed && styles.mapsButtonPressed,
-                  ]}
-                >
-                  <Text style={[styles.mapsButtonLabel, styles.deleteButtonLabel]}>Delete place</Text>
-                </Pressable>
               </>
+            ) : null}
+
+            {isEditing ? (
+              <TextInput
+                placeholder="Add a note about this place…"
+                placeholderTextColor={colors.inkSoft}
+                value={notes}
+                onChangeText={setNotes}
+                multiline
+                autoFocus
+                style={styles.notesInput}
+              />
+            ) : notes ? (
+              <Text style={styles.notesInput}>{notes}</Text>
+            ) : null}
+
+            {isEditing ? (
+              <Pressable
+                onPress={() => setConfirmingDelete(true)}
+                style={({ pressed }) => [
+                  styles.mapsButton,
+                  styles.deleteButton,
+                  pressed && styles.mapsButtonPressed,
+                ]}
+              >
+                <Text style={[styles.mapsButtonLabel, styles.deleteButtonLabel]}>Delete place</Text>
+              </Pressable>
             ) : null}
           </>
         ) : savedPlacesLoading ? (
