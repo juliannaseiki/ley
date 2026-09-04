@@ -66,14 +66,40 @@ type SavedPlacePhoto = {
   url: string;
 };
 
+// The grid always renders 1 or 2 rows of up to 2 cells, in upload order: 1 photo is a single
+// full-width cell, 2 sit side by side, 3 form a 2x2 grid with the trailing cell left empty (a
+// `null` placeholder — later filled with an icon, see LEY-51/52), and 4 fill the 2x2 grid
+// completely. `null` cells are never emitted past the last photo, so a 1- or 2-photo grid stays a
+// single row rather than gaining a blank second row.
+function getPhotoGridRows(photos: SavedPlacePhoto[]): (SavedPlacePhoto | null)[][] {
+  const capped = photos.slice(0, MAX_PHOTOS);
+  switch (capped.length) {
+    case 0:
+      return [];
+    case 1:
+    case 2:
+      return [capped];
+    case 3:
+      return [
+        [capped[0], capped[1]],
+        [capped[2], null],
+      ];
+    default:
+      return [
+        [capped[0], capped[1]],
+        [capped[2], capped[3]],
+      ];
+  }
+}
+
 // Cap the longer side of an uploaded photo to the device's own screen width in physical pixels —
 // camera originals (often 3000-4000px+) are far larger than that, so uploading them unresized
 // wastes upload/download bandwidth for no visual benefit. Device width (rather than a flat
 // constant) leaves room for a future full-width photo view to render these at native resolution.
 const MAX_PHOTO_DIMENSION = Math.round(SCREEN_WIDTH * PixelRatio.get());
 const PHOTO_COMPRESSION_QUALITY = 0.7;
-// The upload cap itself — how the resulting photos actually lay out (LEY-50) is a separate concern
-// from how many a place can have (this constant).
+// The grid's own cap, matching the max grid cell count getPhotoGridRows lays out for (1 row of 2
+// cells, or a 2x2 grid) — also the ceiling handleAddPhoto enforces when uploading.
 const MAX_PHOTOS = 4;
 
 // Three resting heights the panel can snap to, ascending by how open the panel is — a plain
@@ -723,18 +749,30 @@ export function PlaceDetailPanel({
 
             {photos.length > 0 ? (
               <View style={styles.photoGrid}>
-                {photos.map((photo) => (
-                  <View key={photo.id} style={styles.photoGridTile}>
-                    <Image source={{ uri: photo.url }} style={styles.photoGridImage} resizeMode="cover" />
-                    {isEditing ? (
-                      <Pressable
-                        onPress={() => setConfirmingDeletePhoto(photo)}
-                        style={styles.photoDeleteButton}
-                        hitSlop={8}
-                      >
-                        <Text style={styles.photoDeleteButtonLabel}>×</Text>
-                      </Pressable>
-                    ) : null}
+                {getPhotoGridRows(photos).map((row, rowIndex) => (
+                  <View key={rowIndex} style={styles.photoGridRow}>
+                    {row.map((photo, cellIndex) =>
+                      photo ? (
+                        <View key={photo.id} style={styles.photoGridCell}>
+                          <Image
+                            source={{ uri: photo.url }}
+                            style={styles.photoGridImage}
+                            resizeMode="cover"
+                          />
+                          {isEditing ? (
+                            <Pressable
+                              onPress={() => setConfirmingDeletePhoto(photo)}
+                              style={styles.photoDeleteButton}
+                              hitSlop={8}
+                            >
+                              <Text style={styles.photoDeleteButtonLabel}>×</Text>
+                            </Pressable>
+                          ) : null}
+                        </View>
+                      ) : (
+                        <View key={cellIndex} style={[styles.photoGridCell, styles.photoGridCellEmpty]} />
+                      )
+                    )}
                   </View>
                 ))}
               </View>
@@ -976,19 +1014,30 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: spacing.md,
   },
-  // A plain two-column wrap grid — not the fixed 1/2/3/4-specific layout LEY-37/42 built (that's
-  // being reworked in LEY-50), just enough to show every uploaded photo at a consistent size.
   photoGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
     gap: spacing.sm,
     marginBottom: spacing.md,
   },
-  photoGridTile: {
-    width: '48%',
+  photoGridRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  // flex: 1 with its own aspectRatio (rather than a fixed aspect ratio on the outer photoGrid,
+  // shared out via flex among however many rows/cells exist) — each cell is always a true square,
+  // so the grid's overall footprint grows with photo count instead of staying fixed. A rejected
+  // earlier attempt fixed the outer container's aspect ratio to keep footprint constant across
+  // counts (LEY-42); that's explicitly not what LEY-50 wants.
+  photoGridCell: {
+    flex: 1,
     aspectRatio: 1,
-    borderRadius: radii.md,
     position: 'relative',
+  },
+  photoGridCellEmpty: {
+    backgroundColor: colors.panelBackground,
+    borderWidth: 1,
+    borderColor: colors.hairline,
+    borderStyle: 'dashed',
+    borderRadius: radii.md,
   },
   photoGridImage: {
     width: '100%',
