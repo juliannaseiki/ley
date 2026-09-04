@@ -8,7 +8,7 @@ import { useAuth, supabase } from '@ley/auth';
 import { colors, fonts, radii, spacing } from '@ley/ui';
 import { SavedPlace } from '../types/place';
 
-const SAVED_PLACE_COLUMNS = 'id, name, category, formatted_address, latitude, longitude';
+const SAVED_PLACE_COLUMNS = 'id, name, category, formatted_address, latitude, longitude, pin_photo_id';
 
 function firstNameFromEmail(email: string): string {
   const local = email.split('@')[0] ?? '';
@@ -100,6 +100,11 @@ export function HomeScreen() {
     setSelectedSavedPlace(null);
   };
 
+  const handlePlaceUpdated = (place: SavedPlace) => {
+    setSavedPlaces((prev) => prev.map((p) => (p.id === place.id ? place : p)));
+    setSelectedSavedPlace((prev) => (prev && prev.id === place.id ? place : prev));
+  };
+
   const handleBackToWelcome = () => setSelectedSavedPlace(null);
 
   const handleSelectSavedPlace = (place: SavedPlace) => {
@@ -162,6 +167,7 @@ export function HomeScreen() {
         savedPlacesError={savedPlacesError}
         onPlaceSaved={handlePlaceSaved}
         onPlaceDeleted={handlePlaceDeleted}
+        onPlaceUpdated={handlePlaceUpdated}
         onBack={handleBackToWelcome}
         onSelectPlace={handleSelectSavedPlace}
       />
