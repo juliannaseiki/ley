@@ -9,6 +9,8 @@ import { colors, fonts, radii, spacing } from '@ley/ui';
 import { SavedPlace } from '../types/place';
 
 const SAVED_PLACE_COLUMNS = 'id, name, category, formatted_address, latitude, longitude, pin_photo_id';
+const PHOTO_BUCKET = 'saved-place-photos';
+const PHOTO_SIGNED_URL_TTL_SECONDS = 60 * 60;
 
 function firstNameFromEmail(email: string): string {
   const local = email.split('@')[0] ?? '';
@@ -32,6 +34,7 @@ export function HomeScreen() {
   const [savedPlacesLoading, setSavedPlacesLoading] = useState(false);
   const [savedPlacesError, setSavedPlacesError] = useState<string | null>(null);
   const [profileName, setProfileName] = useState<string | null>(null);
+  const [pinPhotoUrls, setPinPhotoUrls] = useState<Record<string, string>>({});
 
   const userId = session?.user?.id;
 
@@ -76,6 +79,62 @@ export function HomeScreen() {
       cancelled = true;
     };
   }, [userId]);
+
+  useEffect(() => {
+    if (savedPlaces.length === 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setPinPhotoUrls({});
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const { data: rows } = await supabase
+        .from('saved_place_photos')
+        .select('id, saved_place_id, storage_path')
+        .in(
+          'saved_place_id',
+          savedPlaces.map((place) => place.id)
+        )
+        .order('created_at', { ascending: true });
+      if (!rows || rows.length === 0) {
+        if (!cancelled) setPinPhotoUrls({});
+        return;
+      }
+      const photoById = new Map(rows.map((row) => [row.id, row.storage_path]));
+      // Rows are earliest-first, so the first one seen per place is "the earliest-uploaded
+      // photo" — the same default pin_photo_id === null refers to (see LEY-51).
+      const earliestPathByPlaceId = new Map<string, string>();
+      for (const row of rows) {
+        if (!earliestPathByPlaceId.has(row.saved_place_id)) {
+          earliestPathByPlaceId.set(row.saved_place_id, row.storage_path);
+        }
+      }
+      const pathByPlaceId = new Map<string, string>();
+      for (const place of savedPlaces) {
+        const path = place.pin_photo_id
+          ? (photoById.get(place.pin_photo_id) ?? earliestPathByPlaceId.get(place.id))
+          : earliestPathByPlaceId.get(place.id);
+        if (path) pathByPlaceId.set(place.id, path);
+      }
+      if (pathByPlaceId.size === 0) {
+        if (!cancelled) setPinPhotoUrls({});
+        return;
+      }
+      const { data: signedUrls } = await supabase.storage
+        .from(PHOTO_BUCKET)
+        .createSignedUrls(Array.from(pathByPlaceId.values()), PHOTO_SIGNED_URL_TTL_SECONDS);
+      const urlByPath = new Map((signedUrls ?? []).map((entry) => [entry.path, entry.signedUrl]));
+      const urlByPlaceId: Record<string, string> = {};
+      for (const [placeId, path] of pathByPlaceId) {
+        const url = urlByPath.get(path);
+        if (url) urlByPlaceId[placeId] = url;
+      }
+      if (!cancelled) setPinPhotoUrls(urlByPlaceId);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [savedPlaces]);
 
   const handlePinTap = (placeId: string) => {
     const place = savedPlaces.find((p) => p.id === placeId);
@@ -149,6 +208,7 @@ export function HomeScreen() {
           id: place.id,
           lat: place.latitude,
           lon: place.longitude,
+          photoUrl: pinPhotoUrls[place.id],
         }))}
         focusedPlace={
           selectedSavedPlace

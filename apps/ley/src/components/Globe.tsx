@@ -9,6 +9,7 @@ type GlobePlace = {
   id: string;
   lat: number;
   lon: number;
+  photoUrl?: string | null;
 };
 
 type Props = {
@@ -26,7 +27,12 @@ export function Globe({ onPinTap, savedPlaces = [], focusedPlace }: Props) {
     webViewRef.current?.postMessage(
       JSON.stringify({
         type: 'setSavedPlaces',
-        places: savedPlaces.map((place) => ({ id: place.id, lat: place.lat, lon: place.lon })),
+        places: savedPlaces.map((place) => ({
+          id: place.id,
+          lat: place.lat,
+          lon: place.lon,
+          photoUrl: place.photoUrl ?? null,
+        })),
       })
     );
   }, [webViewReady, savedPlaces]);
