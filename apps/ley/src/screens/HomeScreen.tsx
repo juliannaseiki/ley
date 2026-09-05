@@ -9,7 +9,7 @@ import { colors, fonts, radii, spacing } from '@ley/ui';
 import { SavedPlace } from '../types/place';
 
 const SAVED_PLACE_COLUMNS =
-  'id, name, category, formatted_address, latitude, longitude, pin_photo_id, pin_thumbnail_path';
+  'id, name, category, formatted_address, latitude, longitude, pin_photo_id, pin_thumbnail_path, notes';
 const PHOTO_BUCKET = 'saved-place-photos';
 const PHOTO_SIGNED_URL_TTL_SECONDS = 60 * 60;
 
@@ -250,6 +250,7 @@ export function HomeScreen() {
         onPlaceDeleted={handlePlaceDeleted}
         onPlaceUpdated={handlePlaceUpdated}
         onBack={handleBackToWelcome}
+        onExitEditing={() => setIsEditing(false)}
         onSelectPlace={handleSelectSavedPlace}
       />
 
@@ -261,13 +262,17 @@ export function HomeScreen() {
         <Text style={styles.addButtonLabel}>+</Text>
       </Pressable>
 
-      {selectedSavedPlace ? (
+      {/* No "Done" toggle — every edit (photos, pin) already saves itself the moment it changes,
+          and notes now saves when the panel's own close button is tapped (see handleClose in
+          PlaceDetailPanel.tsx), so there's nothing left for a separate "finish editing" action to
+          do. This button only starts editing; leaving edit mode happens by leaving the place. */}
+      {selectedSavedPlace && !isEditing ? (
         <Pressable
-          onPress={() => setIsEditing((prev) => !prev)}
+          onPress={() => setIsEditing(true)}
           style={[styles.editButton, { bottom: insets.bottom + spacing.md, left: spacing.lg }]}
           hitSlop={8}
         >
-          <Text style={styles.editButtonLabel}>{isEditing ? 'Done' : 'Edit'}</Text>
+          <Text style={styles.editButtonLabel}>Edit</Text>
         </Pressable>
       ) : null}
 
