@@ -867,7 +867,7 @@ export function PlaceDetailPanel({
         <View style={styles.headerRow}>
           {selectedSavedPlace ? (
             <Pressable onPress={onBack} style={styles.headerCloseButton} hitSlop={8}>
-              <Text style={styles.headerCloseButtonIcon}>×</Text>
+              <Text style={styles.headerCloseButtonIcon}>✕</Text>
             </Pressable>
           ) : (
             <View style={styles.headerCloseButtonSpacer} />
@@ -1275,10 +1275,12 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
   },
+  // Same glyph/font/size/color as SettingsPanel.tsx's own closeIcon, for a consistent "close this
+  // sheet" icon across the app.
   headerCloseButtonIcon: {
-    fontFamily: fonts.headingSemiBold,
-    fontSize: 18,
-    color: colors.ink,
+    fontFamily: fonts.bodyMedium,
+    fontSize: 16,
+    color: colors.inkSoft,
   },
   // A fixed width (rather than sizing to content) keeps the button — and the title's centering,
   // which depends on matching this width via headerEditButtonSpacer on the Welcome/add-place
