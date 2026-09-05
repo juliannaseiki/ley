@@ -102,8 +102,24 @@ const PHOTO_COMPRESSION_QUALITY = 0.7;
 // The dedicated pin thumbnail (LEY-53): globe pins render at PIN_RADIUS*2 = 30 CSS px, scaled by
 // at most DPR_CAP = 2 in globe-entry.js, so 64px physical pixels comfortably covers every device —
 // versus the full device-width photo (MAX_PHOTO_DIMENSION) previously reused for pin fills, which
-// was a known contributor to pin-rendering performance issues.
+// was a known contributor to pin-rendering performance issues. A thumbnail is only ever generated
+// for a photo that's actually going to be a pin (the place's first photo, which becomes the
+// default pin — see effectivePinPhotoId below — or a photo the user explicitly pins later via
+// handleSetPinPhoto), not for every photo in the gallery.
 const PIN_THUMBNAIL_DIMENSION = 64;
+
+// Shared by both places a thumbnail gets generated: a fresh upload's first photo (handleAddPhoto,
+// from a local picker asset) and an explicit re-pin of an already-uploaded photo (handleSetPinPhoto,
+// from a data URI decoded off the photo's signed URL — ImageManipulator only accepts a local file
+// or data URI, not a remote http(s) one). Passing only `width` lets ImageManipulator preserve the
+// source aspect ratio automatically, so this doesn't need to know the source's dimensions.
+async function createPinThumbnailUri(sourceUri: string): Promise<string> {
+  const context = ImageManipulator.manipulate(sourceUri);
+  context.resize({ width: PIN_THUMBNAIL_DIMENSION });
+  const rendered = await context.renderAsync();
+  const saved = await rendered.saveAsync({ format: SaveFormat.JPEG, compress: PHOTO_COMPRESSION_QUALITY });
+  return saved.uri;
+}
 // The grid's own cap, matching the max grid cell count getPhotoGridRows lays out for (1 row of 2
 // cells, or a 2x2 grid) — also the ceiling handleAddPhoto enforces when uploading.
 const MAX_PHOTOS = 4;
@@ -521,7 +537,13 @@ export function PlaceDetailPanel({
     setUploadError(null);
     const userId = session.user.id;
     const placeId = selectedSavedPlace.id;
-    for (const asset of result.assets) {
+    // A thumbnail is only generated for the very first photo this place has ever had, since that's
+    // the one that becomes the default pin (see effectivePinPhotoId) — every later upload just
+    // joins the gallery with thumbnail_path left null until/unless it's explicitly pinned (see
+    // handleSetPinPhoto), rather than paying the resize/upload cost for photos that will likely
+    // never render as a pin.
+    const placeHadNoPhotos = photos.length === 0;
+    for (const [index, asset] of result.assets.entries()) {
       let uploadUri = asset.uri;
       let contentType = asset.mimeType ?? 'image/jpeg';
       const longerSide = Math.max(asset.width, asset.height);
@@ -540,28 +562,16 @@ export function PlaceDetailPanel({
         uploadUri = resized.uri;
         contentType = 'image/jpeg';
       }
-      const thumbScale = PIN_THUMBNAIL_DIMENSION / Math.max(asset.width, asset.height);
-      const thumbContext = ImageManipulator.manipulate(asset.uri);
-      thumbContext.resize({
-        width: Math.round(asset.width * thumbScale),
-        height: Math.round(asset.height * thumbScale),
-      });
-      const renderedThumb = await thumbContext.renderAsync();
-      const thumb = await renderedThumb.saveAsync({
-        format: SaveFormat.JPEG,
-        compress: PHOTO_COMPRESSION_QUALITY,
-      });
 
       const arrayBuffer = await fetch(uploadUri).then((res) => res.arrayBuffer());
-      const thumbArrayBuffer = await fetch(thumb.uri).then((res) => res.arrayBuffer());
       const extension = contentType === 'image/jpeg' ? 'jpg' : (uploadUri.split('.').pop() ?? 'jpg');
       // A random suffix (not just Date.now()) keeps paths unique when uploading several photos
       // from this same loop in quick succession, which can land in the same millisecond. The
-      // thumbnail shares that same suffix, filed under its own subfolder rather than a filename
-      // variant, so it's obvious at a glance in storage which thumbnail belongs to which photo.
+      // thumbnail (when generated) shares that same suffix, filed under its own subfolder rather
+      // than a filename variant, so it's obvious at a glance in storage which thumbnail belongs to
+      // which photo.
       const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const path = `${userId}/${placeId}/${suffix}.${extension}`;
-      const thumbnailPath = `${userId}/${placeId}/thumbnails/${suffix}.jpg`;
       const { error: uploadErr } = await supabase.storage
         .from(PHOTO_BUCKET)
         .upload(path, arrayBuffer, { contentType });
@@ -571,15 +581,23 @@ export function PlaceDetailPanel({
         setPhotos(await loadPhotos(placeId));
         return;
       }
-      const { error: thumbUploadErr } = await supabase.storage
-        .from(PHOTO_BUCKET)
-        .upload(thumbnailPath, thumbArrayBuffer, { contentType: 'image/jpeg' });
-      if (thumbUploadErr) {
-        setUploadingPhoto(false);
-        setUploadError(thumbUploadErr.message);
-        setPhotos(await loadPhotos(placeId));
-        return;
+
+      let thumbnailPath: string | null = null;
+      if (placeHadNoPhotos && index === 0) {
+        const thumbUri = await createPinThumbnailUri(asset.uri);
+        const thumbArrayBuffer = await fetch(thumbUri).then((res) => res.arrayBuffer());
+        thumbnailPath = `${userId}/${placeId}/thumbnails/${suffix}.jpg`;
+        const { error: thumbUploadErr } = await supabase.storage
+          .from(PHOTO_BUCKET)
+          .upload(thumbnailPath, thumbArrayBuffer, { contentType: 'image/jpeg' });
+        if (thumbUploadErr) {
+          setUploadingPhoto(false);
+          setUploadError(thumbUploadErr.message);
+          setPhotos(await loadPhotos(placeId));
+          return;
+        }
       }
+
       const { error: insertErr } = await supabase.from('saved_place_photos').insert({
         saved_place_id: placeId,
         user_id: userId,
@@ -648,9 +666,45 @@ export function PlaceDetailPanel({
   };
 
   const handleSetPinPhoto = async (photo: SavedPlacePhoto) => {
-    if (!selectedSavedPlace || settingPinPhoto || selectedSavedPlace.pin_photo_id === photo.id) return;
+    if (!selectedSavedPlace || !session?.user || settingPinPhoto || selectedSavedPlace.pin_photo_id === photo.id) {
+      return;
+    }
     setSettingPinPhoto(true);
     setPinPhotoError(null);
+    // Thumbnails aren't generated for every gallery photo up front (see handleAddPhoto) — only the
+    // place's first-ever upload gets one automatically, since that's the default pin. Explicitly
+    // pinning a different photo is exactly the other case a thumbnail is needed for, so generate
+    // one here on demand if this photo doesn't already have one.
+    let thumbnailPath = photo.thumbnailPath;
+    if (!thumbnailPath) {
+      try {
+        const blob = await fetch(photo.url).then((res) => res.blob());
+        const dataUri = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onerror = () => reject(reader.error ?? new Error('Failed to read photo'));
+          reader.onload = () => resolve(reader.result as string);
+          reader.readAsDataURL(blob);
+        });
+        const thumbUri = await createPinThumbnailUri(dataUri);
+        const thumbArrayBuffer = await fetch(thumbUri).then((res) => res.arrayBuffer());
+        const path = `${session.user.id}/${selectedSavedPlace.id}/thumbnails/${photo.id}.jpg`;
+        const { error: thumbUploadErr } = await supabase.storage
+          .from(PHOTO_BUCKET)
+          .upload(path, thumbArrayBuffer, { contentType: 'image/jpeg' });
+        if (thumbUploadErr) throw new Error(thumbUploadErr.message);
+        const { error: thumbUpdateErr } = await supabase
+          .from('saved_place_photos')
+          .update({ thumbnail_path: path })
+          .eq('id', photo.id);
+        if (thumbUpdateErr) throw new Error(thumbUpdateErr.message);
+        thumbnailPath = path;
+        setPhotos((prev) => prev.map((p) => (p.id === photo.id ? { ...p, thumbnailPath: path } : p)));
+      } catch (err) {
+        setSettingPinPhoto(false);
+        setPinPhotoError(err instanceof Error ? err.message : 'Failed to generate pin thumbnail.');
+        return;
+      }
+    }
     const { error } = await supabase
       .from('saved_places')
       .update({ pin_photo_id: photo.id })
