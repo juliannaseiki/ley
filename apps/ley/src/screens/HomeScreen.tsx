@@ -29,6 +29,7 @@ export function HomeScreen() {
   const [panelVisible, setPanelVisible] = useState(true);
   const [selectedSavedPlace, setSelectedSavedPlace] = useState<SavedPlace | null>(null);
   const [addingPlace, setAddingPlace] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
   const [settingsVisible, setSettingsVisible] = useState(false);
 
   const [savedPlaces, setSavedPlaces] = useState<SavedPlace[]>([]);
@@ -145,16 +146,21 @@ export function HomeScreen() {
     };
   }, [savedPlaces]);
 
+  // Every one of these actually switches which place is shown (or leaves the panel altogether),
+  // so edit mode always resets with them — handlePlaceUpdated (a same-place edit, e.g. setting a
+  // pin photo) is deliberately not one of these, since that shouldn't kick the user out of editing.
   const handlePinTap = (placeId: string) => {
     const place = savedPlaces.find((p) => p.id === placeId);
     if (!place) return;
     setSelectedSavedPlace(place);
     setAddingPlace(false);
+    setIsEditing(false);
     setPanelVisible(true);
   };
 
   const handleAddPlace = () => {
     setAddingPlace(true);
+    setIsEditing(false);
     setPanelVisible(true);
   };
 
@@ -166,6 +172,7 @@ export function HomeScreen() {
   const handlePlaceDeleted = (placeId: string) => {
     setSavedPlaces((prev) => prev.filter((place) => place.id !== placeId));
     setSelectedSavedPlace(null);
+    setIsEditing(false);
   };
 
   const handlePlaceUpdated = (place: SavedPlace) => {
@@ -173,11 +180,15 @@ export function HomeScreen() {
     setSelectedSavedPlace((prev) => (prev && prev.id === place.id ? place : prev));
   };
 
-  const handleBackToWelcome = () => setSelectedSavedPlace(null);
+  const handleBackToWelcome = () => {
+    setSelectedSavedPlace(null);
+    setIsEditing(false);
+  };
 
   const handleSelectSavedPlace = (place: SavedPlace) => {
     setSelectedSavedPlace(place);
     setAddingPlace(false);
+    setIsEditing(false);
     setPanelVisible(true);
   };
 
@@ -231,6 +242,7 @@ export function HomeScreen() {
         title={panelTitle}
         selectedSavedPlace={selectedSavedPlace}
         addingPlace={addingPlace}
+        isEditing={isEditing}
         savedPlaces={savedPlaces}
         savedPlacesLoading={savedPlacesLoading}
         savedPlacesError={savedPlacesError}
@@ -248,6 +260,16 @@ export function HomeScreen() {
       >
         <Text style={styles.addButtonLabel}>+</Text>
       </Pressable>
+
+      {selectedSavedPlace ? (
+        <Pressable
+          onPress={() => setIsEditing((prev) => !prev)}
+          style={[styles.editButton, { bottom: insets.bottom + spacing.md, left: spacing.lg }]}
+          hitSlop={8}
+        >
+          <Text style={styles.editButtonLabel}>{isEditing ? 'Done' : 'Edit'}</Text>
+        </Pressable>
+      ) : null}
 
       <SettingsPanel
         visible={settingsVisible}
@@ -319,6 +341,31 @@ const styles = StyleSheet.create({
     fontFamily: fonts.headingSemiBold,
     fontSize: 28,
     lineHeight: 32,
+    color: colors.ink,
+  },
+  // Mirrors addButton exactly (same size/shape/shadow, opposite corner) so the two floating
+  // controls read as a matched pair — only visible once a place is selected, since there's nothing
+  // to edit otherwise.
+  editButton: {
+    position: 'absolute',
+    zIndex: 3,
+    width: 56,
+    height: 56,
+    borderRadius: radii.pill,
+    backgroundColor: colors.white,
+    borderWidth: 1,
+    borderColor: colors.hairline,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#1D2620',
+    shadowOpacity: 0.1,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
+  },
+  editButtonLabel: {
+    fontFamily: fonts.bodySemiBold,
+    fontSize: 14,
     color: colors.ink,
   },
 });

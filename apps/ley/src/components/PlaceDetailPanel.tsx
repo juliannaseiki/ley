@@ -142,6 +142,10 @@ type Props = {
   title: string;
   selectedSavedPlace: SavedPlace | null;
   addingPlace: boolean;
+  // Owned by HomeScreen now, not this component — its own toggle moved out of this panel's header
+  // and into a floating FAB next to the add-place one (see HomeScreen.tsx), which needed a way to
+  // read/drive this same state from outside.
+  isEditing: boolean;
   savedPlaces: SavedPlace[];
   savedPlacesLoading: boolean;
   savedPlacesError: string | null;
@@ -157,6 +161,7 @@ export function PlaceDetailPanel({
   title,
   selectedSavedPlace,
   addingPlace,
+  isEditing,
   savedPlaces,
   savedPlacesLoading,
   savedPlacesError,
@@ -217,7 +222,6 @@ export function PlaceDetailPanel({
   // to route through a re-render.
   const scrollOffsetRef = useRef(0);
   const [notes, setNotes] = useState('');
-  const [isEditing, setIsEditing] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -254,13 +258,13 @@ export function PlaceDetailPanel({
   // prop change) rather than an effect, since setState-in-effect on every mount triggers a
   // needless extra render.
   // Compared by id, not object identity — onPlaceUpdated (e.g. setting a pin photo) hands down a
-  // new SavedPlace object for the same place, which shouldn't reset edit state the way actually
-  // switching to a different place (a pin tap) should.
+  // new SavedPlace object for the same place, which shouldn't reset this state the way actually
+  // switching to a different place (a pin tap) should. isEditing itself is reset by HomeScreen,
+  // which owns that state now — see its own selection handlers.
   const [prevSelectedSavedPlaceId, setPrevSelectedSavedPlaceId] = useState(selectedSavedPlace?.id ?? null);
   if ((selectedSavedPlace?.id ?? null) !== prevSelectedSavedPlaceId) {
     setPrevSelectedSavedPlaceId(selectedSavedPlace?.id ?? null);
     if (selectedSavedPlace && expansion === 'peeked') setExpansion('half');
-    setIsEditing(false);
     setConfirmingDelete(false);
     setDeleteError(null);
     setUploadError(null);
@@ -866,24 +870,20 @@ export function PlaceDetailPanel({
       <View {...headerPanResponder.panHandlers}>
         <View style={styles.headerRow}>
           {selectedSavedPlace ? (
-            <Pressable onPress={onBack} style={styles.headerButton} hitSlop={8}>
-              <Text style={styles.headerButtonIcon}>‹</Text>
+            <Pressable onPress={onBack} style={styles.headerCloseButton} hitSlop={8}>
+              <Text style={styles.headerCloseButtonIcon}>✕</Text>
             </Pressable>
           ) : (
-            <View style={styles.headerButtonSpacer} />
+            <View style={styles.headerCloseButtonSpacer} />
           )}
-          <Text style={styles.title}>{title}</Text>
-          {selectedSavedPlace ? (
-            <Pressable
-              onPress={() => setIsEditing((prev) => !prev)}
-              style={styles.headerButton}
-              hitSlop={8}
-            >
-              <Text style={styles.headerButtonIcon}>{isEditing ? '✓' : '✎'}</Text>
-            </Pressable>
-          ) : (
-            <View style={styles.headerButtonSpacer} />
-          )}
+          <Text style={styles.title} numberOfLines={1}>
+            {title}
+          </Text>
+          {/* A plain spacer, always — the edit toggle moved out of this header entirely into a
+              floating FAB next to the add-place one (see HomeScreen.tsx), so both sides of this
+              row are now the same fixed 36pt width whenever the left shows a real button, keeping
+              the title's flex:1 box (and the centered text inside it) symmetric. */}
+          <View style={styles.headerCloseButtonSpacer} />
         </View>
       </View>
 
@@ -1262,20 +1262,32 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
     marginBottom: spacing.md,
   },
-  headerButton: {
+  // Circular, matching every other small icon button in the app (SettingsPanel's own close
+  // button, the photo grid's delete/pin buttons) — the edit toggle used to sit on the opposite
+  // side as a wider pill, which the close button was briefly widened to match, but it's since
+  // moved out of this header into its own floating FAB, so there's no more asymmetry to match.
+  headerCloseButton: {
     width: 36,
     height: 36,
+    borderRadius: radii.pill,
+    borderWidth: 1,
+    borderColor: colors.hairline,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  headerButtonSpacer: {
+  // Mirrors headerCloseButton's footprint on the opposite side whenever it renders, so the
+  // title's flex:1 box — and the centered text inside it — stays symmetric between two equal-width
+  // slots rather than one real button and nothing at all.
+  headerCloseButtonSpacer: {
     width: 36,
     height: 36,
   },
-  headerButtonIcon: {
-    fontFamily: fonts.headingSemiBold,
-    fontSize: 21,
-    color: colors.inkFaint,
+  // Same glyph/font/size/color as SettingsPanel.tsx's own closeIcon, for a consistent "close this
+  // sheet" icon across the app.
+  headerCloseButtonIcon: {
+    fontFamily: fonts.bodyMedium,
+    fontSize: 16,
+    color: colors.inkSoft,
   },
   title: {
     flex: 1,
