@@ -1278,7 +1278,7 @@ const styles = StyleSheet.create({
   headerCloseButtonIcon: {
     fontFamily: fonts.headingSemiBold,
     fontSize: 18,
-    color: colors.inkFaint,
+    color: colors.ink,
   },
   // A fixed width (rather than sizing to content) keeps the button — and the title's centering,
   // which depends on matching this width via headerEditButtonSpacer on the Welcome/add-place
@@ -1300,7 +1300,7 @@ const styles = StyleSheet.create({
   headerEditButtonLabel: {
     fontFamily: fonts.bodySemiBold,
     fontSize: 14,
-    color: colors.inkFaint,
+    color: colors.ink,
   },
   title: {
     flex: 1,
