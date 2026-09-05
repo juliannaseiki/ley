@@ -620,6 +620,13 @@ export function PlaceDetailPanel({
     if (latest) {
       setSavedPlacePhotoUrls((prev) => ({ ...prev, [placeId]: latest.url }));
     }
+    // HomeScreen resolves each place's globe-pin photo (thumbnail-or-earliest-upload) in an effect
+    // keyed on its own `savedPlaces` state, which nothing else here touches — without this, a
+    // place's first-ever photo (which just became its default pin) would upload successfully but
+    // the globe pin would keep showing the emoji fallback until something unrelated happened to
+    // change savedPlaces. Handing back a fresh copy of the same place is enough to make that effect
+    // re-run and pick up the new photo, even though pin_photo_id itself hasn't changed.
+    if (selectedSavedPlace) onPlaceUpdated({ ...selectedSavedPlace });
   };
 
   const handleDeletePhoto = async () => {
@@ -657,11 +664,16 @@ export function PlaceDetailPanel({
         return next;
       });
     }
-    // The FK's `on delete set null` already cleared this server-side — mirror it locally so
-    // effectivePinPhotoId immediately falls back to the new earliest-uploaded photo instead of
-    // pointing at the id of a photo that no longer exists until the next full reload.
-    if (selectedSavedPlace && selectedSavedPlace.pin_photo_id === deletedId) {
-      onPlaceUpdated({ ...selectedSavedPlace, pin_photo_id: null });
+    // Always notify HomeScreen, even when pin_photo_id itself hasn't changed — deleting any photo
+    // can shift which one is "the earliest-uploaded" (the fallback effectivePinPhotoId resolves to
+    // when pin_photo_id is null), and HomeScreen only re-resolves the globe-pin photo when it sees
+    // a new place object (see the matching comment in handleAddPhoto). The FK's `on delete set
+    // null` already cleared pin_photo_id server-side when the deleted photo was the pinned one —
+    // this just mirrors that locally so effectivePinPhotoId doesn't keep pointing at an id that no
+    // longer exists until the next full reload.
+    if (selectedSavedPlace) {
+      const nextPinPhotoId = selectedSavedPlace.pin_photo_id === deletedId ? null : selectedSavedPlace.pin_photo_id;
+      onPlaceUpdated({ ...selectedSavedPlace, pin_photo_id: nextPinPhotoId });
     }
   };
 
