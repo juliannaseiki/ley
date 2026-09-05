@@ -63,6 +63,7 @@ function emojiForPlaceId(id: string): string {
 type SavedPlacePhoto = {
   id: string;
   storagePath: string;
+  thumbnailPath: string | null;
   url: string;
 };
 
@@ -98,6 +99,11 @@ function getPhotoGridRows(photos: SavedPlacePhoto[]): (SavedPlacePhoto | null)[]
 // constant) leaves room for a future full-width photo view to render these at native resolution.
 const MAX_PHOTO_DIMENSION = Math.round(SCREEN_WIDTH * PixelRatio.get());
 const PHOTO_COMPRESSION_QUALITY = 0.7;
+// The dedicated pin thumbnail (LEY-53): globe pins render at PIN_RADIUS*2 = 30 CSS px, scaled by
+// at most DPR_CAP = 2 in globe-entry.js, so 64px physical pixels comfortably covers every device —
+// versus the full device-width photo (MAX_PHOTO_DIMENSION) previously reused for pin fills, which
+// was a known contributor to pin-rendering performance issues.
+const PIN_THUMBNAIL_DIMENSION = 64;
 // The grid's own cap, matching the max grid cell count getPhotoGridRows lays out for (1 row of 2
 // cells, or a 2x2 grid) — also the ceiling handleAddPhoto enforces when uploading.
 const MAX_PHOTOS = 4;
@@ -299,7 +305,7 @@ export function PlaceDetailPanel({
   const loadPhotos = async (placeId: string): Promise<SavedPlacePhoto[]> => {
     const { data: rows } = await supabase
       .from('saved_place_photos')
-      .select('id, storage_path')
+      .select('id, storage_path, thumbnail_path')
       .eq('saved_place_id', placeId)
       .order('created_at', { ascending: true });
     if (!rows || rows.length === 0) return [];
@@ -311,7 +317,12 @@ export function PlaceDetailPanel({
       );
     const urlByPath = new Map((signedUrls ?? []).map((entry) => [entry.path, entry.signedUrl]));
     return rows
-      .map((row) => ({ id: row.id, storagePath: row.storage_path, url: urlByPath.get(row.storage_path) }))
+      .map((row) => ({
+        id: row.id,
+        storagePath: row.storage_path,
+        thumbnailPath: row.thumbnail_path,
+        url: urlByPath.get(row.storage_path),
+      }))
       .filter((photo): photo is SavedPlacePhoto => Boolean(photo.url));
   };
 
@@ -529,11 +540,28 @@ export function PlaceDetailPanel({
         uploadUri = resized.uri;
         contentType = 'image/jpeg';
       }
+      const thumbScale = PIN_THUMBNAIL_DIMENSION / Math.max(asset.width, asset.height);
+      const thumbContext = ImageManipulator.manipulate(asset.uri);
+      thumbContext.resize({
+        width: Math.round(asset.width * thumbScale),
+        height: Math.round(asset.height * thumbScale),
+      });
+      const renderedThumb = await thumbContext.renderAsync();
+      const thumb = await renderedThumb.saveAsync({
+        format: SaveFormat.JPEG,
+        compress: PHOTO_COMPRESSION_QUALITY,
+      });
+
       const arrayBuffer = await fetch(uploadUri).then((res) => res.arrayBuffer());
+      const thumbArrayBuffer = await fetch(thumb.uri).then((res) => res.arrayBuffer());
       const extension = contentType === 'image/jpeg' ? 'jpg' : (uploadUri.split('.').pop() ?? 'jpg');
       // A random suffix (not just Date.now()) keeps paths unique when uploading several photos
-      // from this same loop in quick succession, which can land in the same millisecond.
-      const path = `${userId}/${placeId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${extension}`;
+      // from this same loop in quick succession, which can land in the same millisecond. The
+      // thumbnail shares that same suffix, filed under its own subfolder rather than a filename
+      // variant, so it's obvious at a glance in storage which thumbnail belongs to which photo.
+      const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const path = `${userId}/${placeId}/${suffix}.${extension}`;
+      const thumbnailPath = `${userId}/${placeId}/thumbnails/${suffix}.jpg`;
       const { error: uploadErr } = await supabase.storage
         .from(PHOTO_BUCKET)
         .upload(path, arrayBuffer, { contentType });
@@ -543,10 +571,20 @@ export function PlaceDetailPanel({
         setPhotos(await loadPhotos(placeId));
         return;
       }
+      const { error: thumbUploadErr } = await supabase.storage
+        .from(PHOTO_BUCKET)
+        .upload(thumbnailPath, thumbArrayBuffer, { contentType: 'image/jpeg' });
+      if (thumbUploadErr) {
+        setUploadingPhoto(false);
+        setUploadError(thumbUploadErr.message);
+        setPhotos(await loadPhotos(placeId));
+        return;
+      }
       const { error: insertErr } = await supabase.from('saved_place_photos').insert({
         saved_place_id: placeId,
         user_id: userId,
         storage_path: path,
+        thumbnail_path: thumbnailPath,
       });
       if (insertErr) {
         setUploadingPhoto(false);
@@ -570,9 +608,10 @@ export function PlaceDetailPanel({
     if (!confirmingDeletePhoto || deletingPhoto) return;
     setDeletingPhoto(true);
     setDeletePhotoError(null);
-    const { error: storageErr } = await supabase.storage
-      .from(PHOTO_BUCKET)
-      .remove([confirmingDeletePhoto.storagePath]);
+    const pathsToRemove = confirmingDeletePhoto.thumbnailPath
+      ? [confirmingDeletePhoto.storagePath, confirmingDeletePhoto.thumbnailPath]
+      : [confirmingDeletePhoto.storagePath];
+    const { error: storageErr } = await supabase.storage.from(PHOTO_BUCKET).remove(pathsToRemove);
     if (storageErr) {
       setDeletingPhoto(false);
       setDeletePhotoError(storageErr.message);

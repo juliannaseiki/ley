@@ -90,7 +90,7 @@ export function HomeScreen() {
     (async () => {
       const { data: rows } = await supabase
         .from('saved_place_photos')
-        .select('id, saved_place_id, storage_path')
+        .select('id, saved_place_id, storage_path, thumbnail_path')
         .in(
           'saved_place_id',
           savedPlaces.map((place) => place.id)
@@ -100,13 +100,16 @@ export function HomeScreen() {
         if (!cancelled) setPinPhotoUrls({});
         return;
       }
-      const photoById = new Map(rows.map((row) => [row.id, row.storage_path]));
+      // Pins render a dedicated small thumbnail (LEY-53) rather than the full device-width photo
+      // the gallery/panel view uses — thumbnail_path is null for photos uploaded before this
+      // pipeline existed, so those fall back to storage_path until re-uploaded.
+      const photoById = new Map(rows.map((row) => [row.id, row.thumbnail_path ?? row.storage_path]));
       // Rows are earliest-first, so the first one seen per place is "the earliest-uploaded
       // photo" — the same default pin_photo_id === null refers to (see LEY-51).
       const earliestPathByPlaceId = new Map<string, string>();
       for (const row of rows) {
         if (!earliestPathByPlaceId.has(row.saved_place_id)) {
-          earliestPathByPlaceId.set(row.saved_place_id, row.storage_path);
+          earliestPathByPlaceId.set(row.saved_place_id, row.thumbnail_path ?? row.storage_path);
         }
       }
       const pathByPlaceId = new Map<string, string>();
