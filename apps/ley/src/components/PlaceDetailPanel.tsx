@@ -865,25 +865,38 @@ export function PlaceDetailPanel({
     >
       <View {...headerPanResponder.panHandlers}>
         <View style={styles.headerRow}>
-          {selectedSavedPlace ? (
-            <Pressable onPress={onBack} style={styles.headerCloseButton} hitSlop={8}>
-              <Text style={styles.headerCloseButtonIcon}>✕</Text>
-            </Pressable>
-          ) : (
-            <View style={styles.headerCloseButtonSpacer} />
-          )}
-          <Text style={styles.title}>{title}</Text>
-          {selectedSavedPlace ? (
-            <Pressable
-              onPress={() => setIsEditing((prev) => !prev)}
-              style={styles.headerEditButton}
-              hitSlop={8}
-            >
-              <Text style={styles.headerEditButtonLabel}>{isEditing ? 'Done' : 'Edit'}</Text>
-            </Pressable>
-          ) : (
-            <View style={styles.headerEditButtonSpacer} />
-          )}
+          <View style={styles.headerSide}>
+            {selectedSavedPlace ? (
+              <Pressable onPress={onBack} style={styles.headerCloseButton} hitSlop={8}>
+                <Text style={styles.headerCloseButtonIcon}>✕</Text>
+              </Pressable>
+            ) : null}
+          </View>
+          {/* Absolutely positioned over the full row (not a flex:1 sibling of the two side
+              buttons) so it centers on the row's actual width regardless of the close/edit
+              buttons being different sizes — a flex:1 title between unequal-width siblings
+              centers within its own left-over box, which isn't the same as the row's center.
+              pointerEvents="none" lets taps on the buttons underneath still land, since this
+              box's (invisible) bounds span across them too. */}
+          <View
+            style={[styles.titleOverlay, selectedSavedPlace && styles.titleOverlayWithButtons]}
+            pointerEvents="none"
+          >
+            <Text style={styles.title} numberOfLines={1}>
+              {title}
+            </Text>
+          </View>
+          <View style={[styles.headerSide, styles.headerSideRight]}>
+            {selectedSavedPlace ? (
+              <Pressable
+                onPress={() => setIsEditing((prev) => !prev)}
+                style={styles.headerEditButton}
+                hitSlop={8}
+              >
+                <Text style={styles.headerEditButtonLabel}>{isEditing ? 'Done' : 'Edit'}</Text>
+              </Pressable>
+            ) : null}
+          </View>
         </View>
       </View>
 
@@ -1256,11 +1269,21 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: -3 },
     elevation: 3,
   },
+  // A fixed height (rather than sizing to the buttons) gives titleOverlay something concrete to
+  // center within even when neither button renders (the Welcome/add-place screens).
   headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    height: 36,
     marginTop: spacing.sm,
     marginBottom: spacing.md,
+  },
+  headerSide: {
+    alignItems: 'flex-start',
+  },
+  headerSideRight: {
+    marginLeft: 'auto',
+    alignItems: 'flex-end',
   },
   headerCloseButton: {
     width: 36,
@@ -1271,10 +1294,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  headerCloseButtonSpacer: {
-    width: 36,
-    height: 36,
-  },
   // Same glyph/font/size/color as SettingsPanel.tsx's own closeIcon, for a consistent "close this
   // sheet" icon across the app.
   headerCloseButtonIcon: {
@@ -1282,9 +1301,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: colors.inkSoft,
   },
-  // A fixed width (rather than sizing to content) keeps the button — and the title's centering,
-  // which depends on matching this width via headerEditButtonSpacer on the Welcome/add-place
-  // screens — stable across the "Edit"/"Done" label swap rather than shifting between the two.
   headerEditButton: {
     minWidth: 64,
     height: 36,
@@ -1295,22 +1311,33 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  headerEditButtonSpacer: {
-    minWidth: 64,
-    height: 36,
-  },
   headerEditButtonLabel: {
     fontFamily: fonts.bodySemiBold,
     fontSize: 14,
     color: colors.ink,
   },
+  titleOverlay: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  // Only applied when the close/edit buttons actually render (selectedSavedPlace) — the Welcome
+  // and add-place screens have no buttons to clear and should keep the title's full width rather
+  // than truncating for no reason. Clears both buttons (the wider 64pt-plus-gap edit button sets
+  // the tighter constraint) so long titles ellipsize before running under them; the buttons stay
+  // tappable underneath this overlay regardless (see pointerEvents="none" above).
+  titleOverlayWithButtons: {
+    paddingHorizontal: 80,
+  },
   title: {
-    flex: 1,
     fontFamily: fonts.headingSemiBold,
     fontSize: 22,
     color: colors.ink,
     textAlign: 'center',
-    marginHorizontal: spacing.sm,
   },
   selectedPlaceSubtitle: {
     fontFamily: fonts.body,
