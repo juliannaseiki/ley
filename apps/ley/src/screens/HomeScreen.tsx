@@ -8,7 +8,8 @@ import { useAuth, supabase } from '@ley/auth';
 import { colors, fonts, radii, spacing } from '@ley/ui';
 import { SavedPlace } from '../types/place';
 
-const SAVED_PLACE_COLUMNS = 'id, name, category, formatted_address, latitude, longitude, pin_photo_id';
+const SAVED_PLACE_COLUMNS =
+  'id, name, category, formatted_address, latitude, longitude, pin_photo_id, pin_thumbnail_path';
 const PHOTO_BUCKET = 'saved-place-photos';
 const PHOTO_SIGNED_URL_TTL_SECONDS = 60 * 60;
 
@@ -88,36 +89,41 @@ export function HomeScreen() {
     }
     let cancelled = false;
     (async () => {
-      const { data: rows } = await supabase
-        .from('saved_place_photos')
-        .select('id, saved_place_id, storage_path, thumbnail_path')
-        .in(
-          'saved_place_id',
-          savedPlaces.map((place) => place.id)
-        )
-        .order('created_at', { ascending: true });
-      if (!rows || rows.length === 0) {
-        if (!cancelled) setPinPhotoUrls({});
-        return;
-      }
-      // Pins render a dedicated small thumbnail (LEY-53) rather than the full device-width photo
-      // the gallery/panel view uses — thumbnail_path is null for photos uploaded before this
-      // pipeline existed, so those fall back to storage_path until re-uploaded.
-      const photoById = new Map(rows.map((row) => [row.id, row.thumbnail_path ?? row.storage_path]));
-      // Rows are earliest-first, so the first one seen per place is "the earliest-uploaded
-      // photo" — the same default pin_photo_id === null refers to (see LEY-51).
-      const earliestPathByPlaceId = new Map<string, string>();
-      for (const row of rows) {
-        if (!earliestPathByPlaceId.has(row.saved_place_id)) {
-          earliestPathByPlaceId.set(row.saved_place_id, row.thumbnail_path ?? row.storage_path);
-        }
-      }
       const pathByPlaceId = new Map<string, string>();
+      // A place with a standalone pin image (LEY-54's "Edit pin") never needs a gallery lookup at
+      // all — that path takes precedence over pin_photo_id/the earliest-uploaded fallback (see
+      // effectivePinPhotoId in PlaceDetailPanel.tsx).
       for (const place of savedPlaces) {
-        const path = place.pin_photo_id
-          ? (photoById.get(place.pin_photo_id) ?? earliestPathByPlaceId.get(place.id))
-          : earliestPathByPlaceId.get(place.id);
-        if (path) pathByPlaceId.set(place.id, path);
+        if (place.pin_thumbnail_path) pathByPlaceId.set(place.id, place.pin_thumbnail_path);
+      }
+      const placesNeedingGalleryLookup = savedPlaces.filter((place) => !place.pin_thumbnail_path);
+      if (placesNeedingGalleryLookup.length > 0) {
+        const { data: rows } = await supabase
+          .from('saved_place_photos')
+          .select('id, saved_place_id, storage_path, thumbnail_path')
+          .in(
+            'saved_place_id',
+            placesNeedingGalleryLookup.map((place) => place.id)
+          )
+          .order('created_at', { ascending: true });
+        // Pins render a dedicated small thumbnail (LEY-53) rather than the full device-width photo
+        // the gallery/panel view uses — thumbnail_path is null for photos uploaded before this
+        // pipeline existed, so those fall back to storage_path until re-uploaded.
+        const photoById = new Map((rows ?? []).map((row) => [row.id, row.thumbnail_path ?? row.storage_path]));
+        // Rows are earliest-first, so the first one seen per place is "the earliest-uploaded
+        // photo" — the same default pin_photo_id === null refers to (see LEY-51).
+        const earliestPathByPlaceId = new Map<string, string>();
+        for (const row of rows ?? []) {
+          if (!earliestPathByPlaceId.has(row.saved_place_id)) {
+            earliestPathByPlaceId.set(row.saved_place_id, row.thumbnail_path ?? row.storage_path);
+          }
+        }
+        for (const place of placesNeedingGalleryLookup) {
+          const path = place.pin_photo_id
+            ? (photoById.get(place.pin_photo_id) ?? earliestPathByPlaceId.get(place.id))
+            : earliestPathByPlaceId.get(place.id);
+          if (path) pathByPlaceId.set(place.id, path);
+        }
       }
       if (pathByPlaceId.size === 0) {
         if (!cancelled) setPinPhotoUrls({});

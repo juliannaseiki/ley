@@ -45,7 +45,8 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
-const SAVED_PLACE_COLUMNS = 'id, name, category, formatted_address, latitude, longitude, pin_photo_id';
+const SAVED_PLACE_COLUMNS =
+  'id, name, category, formatted_address, latitude, longitude, pin_photo_id, pin_thumbnail_path';
 const PHOTO_BUCKET = 'saved-place-photos';
 const PHOTO_SIGNED_URL_TTL_SECONDS = 60 * 60;
 const SAVED_PLACE_CARD_HEIGHT = 96;
@@ -104,15 +105,21 @@ const PHOTO_COMPRESSION_QUALITY = 0.7;
 // versus the full device-width photo (MAX_PHOTO_DIMENSION) previously reused for pin fills, which
 // was a known contributor to pin-rendering performance issues. A thumbnail is only ever generated
 // for a photo that's actually going to be a pin (the place's first photo, which becomes the
-// default pin — see effectivePinPhotoId below — or a photo the user explicitly pins later via
-// handleSetPinPhoto), not for every photo in the gallery.
+// default pin — see effectivePinPhotoId below — a photo the user explicitly pins later via
+// handleSetPinPhoto, or a photo picked specifically for the pin via handleEditPin), not for every
+// photo in the gallery.
 const PIN_THUMBNAIL_DIMENSION = 64;
+// The pin-shape preview rendered next to "Edit pin" (LEY-54) — a UI element the user looks at
+// directly, so sized larger than the globe's own ~30px pin rather than matching it.
+const PIN_SHAPE_SIZE = 64;
 
-// Shared by both places a thumbnail gets generated: a fresh upload's first photo (handleAddPhoto,
-// from a local picker asset) and an explicit re-pin of an already-uploaded photo (handleSetPinPhoto,
+// Shared by every place a thumbnail gets generated: a fresh upload's first photo (handleAddPhoto,
+// from a local picker asset), an explicit re-pin of an already-uploaded photo (handleSetPinPhoto,
 // from a data URI decoded off the photo's signed URL — ImageManipulator only accepts a local file
-// or data URI, not a remote http(s) one). Passing only `width` lets ImageManipulator preserve the
-// source aspect ratio automatically, so this doesn't need to know the source's dimensions.
+// or data URI, not a remote http(s) one), or a photo picked specifically for the pin
+// (handleEditPin, also from a local picker asset). Passing only `width` lets ImageManipulator
+// preserve the source aspect ratio automatically, so this doesn't need to know the source's
+// dimensions.
 async function createPinThumbnailUri(sourceUri: string): Promise<string> {
   const context = ImageManipulator.manipulate(sourceUri);
   context.resize({ width: PIN_THUMBNAIL_DIMENSION });
@@ -221,6 +228,9 @@ export function PlaceDetailPanel({
   const [deletePhotoError, setDeletePhotoError] = useState<string | null>(null);
   const [settingPinPhoto, setSettingPinPhoto] = useState(false);
   const [pinPhotoError, setPinPhotoError] = useState<string | null>(null);
+  const [editingPin, setEditingPin] = useState(false);
+  const [editPinError, setEditPinError] = useState<string | null>(null);
+  const [pinPreviewUrl, setPinPreviewUrl] = useState<string | null>(null);
   const [savedPlacePhotoUrls, setSavedPlacePhotoUrls] = useState<Record<string, string>>({});
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -256,6 +266,7 @@ export function PlaceDetailPanel({
     setConfirmingDeletePhoto(null);
     setDeletePhotoError(null);
     setPinPhotoError(null);
+    setEditPinError(null);
   }
 
   const [prevAddingPlace, setPrevAddingPlace] = useState(addingPlace);
@@ -356,6 +367,37 @@ export function PlaceDetailPanel({
       cancelled = true;
     };
   }, [selectedSavedPlace]);
+
+  // A standalone pin (LEY-54's "Edit pin") takes precedence over any gallery photo — see the
+  // matching precedence in HomeScreen.tsx's own pin resolution. photos is ordered earliest-first
+  // (see loadPhotos), so photos[0] is exactly "the earliest-uploaded photo" the null default
+  // (no standalone pin, no explicit pin_photo_id) refers to.
+  const effectivePinPhotoId = selectedSavedPlace?.pin_thumbnail_path
+    ? null
+    : (selectedSavedPlace?.pin_photo_id ?? photos[0]?.id ?? null);
+
+  useEffect(() => {
+    if (!selectedSavedPlace) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setPinPreviewUrl(null);
+      return;
+    }
+    if (selectedSavedPlace.pin_thumbnail_path) {
+      let cancelled = false;
+      const path = selectedSavedPlace.pin_thumbnail_path;
+      supabase.storage
+        .from(PHOTO_BUCKET)
+        .createSignedUrl(path, PHOTO_SIGNED_URL_TTL_SECONDS)
+        .then(({ data }) => {
+          if (!cancelled) setPinPreviewUrl(data?.signedUrl ?? null);
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
+    const pinnedPhoto = photos.find((photo) => photo.id === effectivePinPhotoId);
+    setPinPreviewUrl(pinnedPhoto?.url ?? null);
+  }, [selectedSavedPlace, photos, effectivePinPhotoId]);
 
   useEffect(() => {
     if (savedPlaces.length === 0) {
@@ -678,7 +720,7 @@ export function PlaceDetailPanel({
   };
 
   const handleSetPinPhoto = async (photo: SavedPlacePhoto) => {
-    if (!selectedSavedPlace || !session?.user || settingPinPhoto || selectedSavedPlace.pin_photo_id === photo.id) {
+    if (!selectedSavedPlace || !session?.user || settingPinPhoto || effectivePinPhotoId === photo.id) {
       return;
     }
     setSettingPinPhoto(true);
@@ -717,16 +759,64 @@ export function PlaceDetailPanel({
         return;
       }
     }
+    // Picking a gallery photo as the pin supersedes any standalone pin image that was previously
+    // set via handleEditPin — only one source is ever active at a time (see effectivePinPhotoId).
+    const previousPinThumbnailPath = selectedSavedPlace.pin_thumbnail_path;
     const { error } = await supabase
       .from('saved_places')
-      .update({ pin_photo_id: photo.id })
+      .update({ pin_photo_id: photo.id, pin_thumbnail_path: null })
       .eq('id', selectedSavedPlace.id);
     setSettingPinPhoto(false);
     if (error) {
       setPinPhotoError(error.message);
       return;
     }
-    onPlaceUpdated({ ...selectedSavedPlace, pin_photo_id: photo.id });
+    if (previousPinThumbnailPath) {
+      await supabase.storage.from(PHOTO_BUCKET).remove([previousPinThumbnailPath]);
+    }
+    onPlaceUpdated({ ...selectedSavedPlace, pin_photo_id: photo.id, pin_thumbnail_path: null });
+  };
+
+  const handleEditPin = async () => {
+    if (!selectedSavedPlace || !session?.user || editingPin) return;
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      setEditPinError('Photo library access is required to edit the pin.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.7 });
+    if (result.canceled) return;
+    setEditingPin(true);
+    setEditPinError(null);
+    const userId = session.user.id;
+    const placeId = selectedSavedPlace.id;
+    // Setting a standalone pin image supersedes whichever gallery photo was previously pinned —
+    // only one source is ever active at a time (see effectivePinPhotoId) — and, if this replaces an
+    // earlier standalone pin, that old thumbnail file is now orphaned and gets cleaned up below.
+    const previousPinThumbnailPath = selectedSavedPlace.pin_thumbnail_path;
+    try {
+      const asset = result.assets[0];
+      const thumbUri = await createPinThumbnailUri(asset.uri);
+      const thumbArrayBuffer = await fetch(thumbUri).then((res) => res.arrayBuffer());
+      const path = `${userId}/${placeId}/thumbnails/pin-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`;
+      const { error: uploadErr } = await supabase.storage
+        .from(PHOTO_BUCKET)
+        .upload(path, thumbArrayBuffer, { contentType: 'image/jpeg' });
+      if (uploadErr) throw new Error(uploadErr.message);
+      const { error: updateErr } = await supabase
+        .from('saved_places')
+        .update({ pin_thumbnail_path: path, pin_photo_id: null })
+        .eq('id', placeId);
+      if (updateErr) throw new Error(updateErr.message);
+      if (previousPinThumbnailPath) {
+        await supabase.storage.from(PHOTO_BUCKET).remove([previousPinThumbnailPath]);
+      }
+      onPlaceUpdated({ ...selectedSavedPlace, pin_thumbnail_path: path, pin_photo_id: null });
+    } catch (err) {
+      setEditPinError(err instanceof Error ? err.message : 'Failed to update pin.');
+    } finally {
+      setEditingPin(false);
+    }
   };
 
   const handleSearchChange = (text: string) => {
@@ -766,10 +856,6 @@ export function PlaceDetailPanel({
     }
     if (data) onPlaceSaved(data);
   };
-
-  // photos is ordered earliest-first (see loadPhotos), so photos[0] is exactly "the
-  // earliest-uploaded photo" the null default refers to.
-  const effectivePinPhotoId = selectedSavedPlace?.pin_photo_id ?? photos[0]?.id ?? null;
 
   return (
     <Animated.View
@@ -885,6 +971,37 @@ export function PlaceDetailPanel({
                   .join(' · ')}
               </Text>
             ) : null}
+
+            <View style={styles.pinRow}>
+              <View style={styles.pinShapeOuter}>
+                <View style={styles.pinShapeInner}>
+                  {pinPreviewUrl ? (
+                    <Image source={{ uri: pinPreviewUrl }} style={styles.pinShapeImage} resizeMode="cover" />
+                  ) : (
+                    <Text style={styles.pinShapeEmoji}>{emojiForPlaceId(selectedSavedPlace.id)}</Text>
+                  )}
+                </View>
+              </View>
+              {isEditing ? (
+                <Pressable
+                  onPress={handleEditPin}
+                  disabled={editingPin}
+                  style={({ pressed }) => [
+                    styles.editPinButton,
+                    pressed && styles.mapsButtonPressed,
+                    editingPin && styles.addPlaceButtonDisabled,
+                  ]}
+                >
+                  {editingPin ? (
+                    <ActivityIndicator color={colors.inkSoft} />
+                  ) : (
+                    <Text style={styles.mapsButtonLabel}>Edit pin</Text>
+                  )}
+                </Pressable>
+              ) : null}
+            </View>
+
+            {editPinError ? <Text style={styles.searchError}>{editPinError}</Text> : null}
 
             {photos.length > 0 ? (
               <View style={styles.photoGrid}>
@@ -1171,6 +1288,54 @@ const styles = StyleSheet.create({
     color: colors.inkSoft,
     textAlign: 'center',
     marginBottom: spacing.md,
+  },
+  pinRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    marginBottom: spacing.md,
+  },
+  // A one-piece teardrop/map-pin shape via three rounded corners + a square one, rotated -45deg —
+  // matches the pin shape traced in globe-entry.js's traceTeardropPath without needing an SVG
+  // library. The image/emoji inside is counter-rotated back to upright so it renders correctly
+  // clipped by the shape rather than rotated along with it, mirroring how the globe's canvas
+  // rendering keeps the photo upright while clipping it to the same outline (see drawSavedPlacePins
+  // in globe-entry.js).
+  pinShapeOuter: {
+    width: PIN_SHAPE_SIZE,
+    height: PIN_SHAPE_SIZE,
+    borderTopLeftRadius: PIN_SHAPE_SIZE / 2,
+    borderTopRightRadius: PIN_SHAPE_SIZE / 2,
+    borderBottomRightRadius: PIN_SHAPE_SIZE / 2,
+    borderBottomLeftRadius: 0,
+    borderWidth: 1,
+    borderColor: colors.hairline,
+    backgroundColor: colors.panelBackground,
+    overflow: 'hidden',
+    transform: [{ rotate: '-45deg' }],
+  },
+  pinShapeInner: {
+    width: '100%',
+    height: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    transform: [{ rotate: '45deg' }],
+  },
+  pinShapeImage: {
+    width: '100%',
+    height: '100%',
+  },
+  pinShapeEmoji: {
+    fontSize: PIN_SHAPE_SIZE * 0.4,
+  },
+  editPinButton: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: colors.hairline,
+    borderRadius: radii.pill,
+    paddingVertical: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   photoGrid: {
     gap: spacing.sm,
