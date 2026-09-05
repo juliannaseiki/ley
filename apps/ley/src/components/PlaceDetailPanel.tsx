@@ -142,6 +142,10 @@ type Props = {
   title: string;
   selectedSavedPlace: SavedPlace | null;
   addingPlace: boolean;
+  // Owned by HomeScreen now, not this component — its own toggle moved out of this panel's header
+  // and into a floating FAB next to the add-place one (see HomeScreen.tsx), which needed a way to
+  // read/drive this same state from outside.
+  isEditing: boolean;
   savedPlaces: SavedPlace[];
   savedPlacesLoading: boolean;
   savedPlacesError: string | null;
@@ -157,6 +161,7 @@ export function PlaceDetailPanel({
   title,
   selectedSavedPlace,
   addingPlace,
+  isEditing,
   savedPlaces,
   savedPlacesLoading,
   savedPlacesError,
@@ -217,7 +222,6 @@ export function PlaceDetailPanel({
   // to route through a re-render.
   const scrollOffsetRef = useRef(0);
   const [notes, setNotes] = useState('');
-  const [isEditing, setIsEditing] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -254,13 +258,13 @@ export function PlaceDetailPanel({
   // prop change) rather than an effect, since setState-in-effect on every mount triggers a
   // needless extra render.
   // Compared by id, not object identity — onPlaceUpdated (e.g. setting a pin photo) hands down a
-  // new SavedPlace object for the same place, which shouldn't reset edit state the way actually
-  // switching to a different place (a pin tap) should.
+  // new SavedPlace object for the same place, which shouldn't reset this state the way actually
+  // switching to a different place (a pin tap) should. isEditing itself is reset by HomeScreen,
+  // which owns that state now — see its own selection handlers.
   const [prevSelectedSavedPlaceId, setPrevSelectedSavedPlaceId] = useState(selectedSavedPlace?.id ?? null);
   if ((selectedSavedPlace?.id ?? null) !== prevSelectedSavedPlaceId) {
     setPrevSelectedSavedPlaceId(selectedSavedPlace?.id ?? null);
     if (selectedSavedPlace && expansion === 'peeked') setExpansion('half');
-    setIsEditing(false);
     setConfirmingDelete(false);
     setDeleteError(null);
     setUploadError(null);
@@ -865,38 +869,21 @@ export function PlaceDetailPanel({
     >
       <View {...headerPanResponder.panHandlers}>
         <View style={styles.headerRow}>
-          <View style={styles.headerSide}>
-            {selectedSavedPlace ? (
-              <Pressable onPress={onBack} style={styles.headerCloseButton} hitSlop={8}>
-                <Text style={styles.headerCloseButtonIcon}>✕</Text>
-              </Pressable>
-            ) : null}
-          </View>
-          {/* Absolutely positioned over the full row (not a flex:1 sibling of the two side
-              buttons) so it centers on the row's actual width regardless of the close/edit
-              buttons being different sizes — a flex:1 title between unequal-width siblings
-              centers within its own left-over box, which isn't the same as the row's center.
-              pointerEvents="none" lets taps on the buttons underneath still land, since this
-              box's (invisible) bounds span across them too. */}
-          <View
-            style={[styles.titleOverlay, selectedSavedPlace && styles.titleOverlayWithButtons]}
-            pointerEvents="none"
-          >
-            <Text style={styles.title} numberOfLines={1}>
-              {title}
-            </Text>
-          </View>
-          <View style={[styles.headerSide, styles.headerSideRight]}>
-            {selectedSavedPlace ? (
-              <Pressable
-                onPress={() => setIsEditing((prev) => !prev)}
-                style={styles.headerEditButton}
-                hitSlop={8}
-              >
-                <Text style={styles.headerEditButtonLabel}>{isEditing ? 'Done' : 'Edit'}</Text>
-              </Pressable>
-            ) : null}
-          </View>
+          {selectedSavedPlace ? (
+            <Pressable onPress={onBack} style={styles.headerCloseButton} hitSlop={8}>
+              <Text style={styles.headerCloseButtonIcon}>✕</Text>
+            </Pressable>
+          ) : (
+            <View style={styles.headerCloseButtonSpacer} />
+          )}
+          <Text style={styles.title} numberOfLines={1}>
+            {title}
+          </Text>
+          {/* A plain spacer, always — the edit toggle moved out of this header entirely into a
+              floating FAB next to the add-place one (see HomeScreen.tsx), so both sides of this
+              row are now the same fixed 36pt width whenever the left shows a real button, keeping
+              the title's flex:1 box (and the centered text inside it) symmetric. */}
+          <View style={styles.headerCloseButtonSpacer} />
         </View>
       </View>
 
@@ -1269,35 +1256,31 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: -3 },
     elevation: 3,
   },
-  // A fixed height (rather than sizing to the buttons) gives titleOverlay something concrete to
-  // center within even when neither button renders (the Welcome/add-place screens).
   headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    height: 36,
     marginTop: spacing.sm,
     marginBottom: spacing.md,
   },
-  headerSide: {
-    alignItems: 'flex-start',
-  },
-  headerSideRight: {
-    marginLeft: 'auto',
-    alignItems: 'flex-end',
-  },
-  // Same 64pt width as headerEditButton (not a tight circle around the glyph) so the two header
-  // buttons carry equal visual weight — a centered title still looked lopsided flanked by a small
-  // circle on one side and a much wider pill on the other, even once it was mathematically
-  // centered on the row.
+  // Circular, matching every other small icon button in the app (SettingsPanel's own close
+  // button, the photo grid's delete/pin buttons) — the edit toggle used to sit on the opposite
+  // side as a wider pill, which the close button was briefly widened to match, but it's since
+  // moved out of this header into its own floating FAB, so there's no more asymmetry to match.
   headerCloseButton: {
-    minWidth: 64,
+    width: 36,
     height: 36,
-    paddingHorizontal: spacing.sm,
     borderRadius: radii.pill,
     borderWidth: 1,
     borderColor: colors.hairline,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  // Mirrors headerCloseButton's footprint on the opposite side whenever it renders, so the
+  // title's flex:1 box — and the centered text inside it — stays symmetric between two equal-width
+  // slots rather than one real button and nothing at all.
+  headerCloseButtonSpacer: {
+    width: 36,
+    height: 36,
   },
   // Same glyph/font/size/color as SettingsPanel.tsx's own closeIcon, for a consistent "close this
   // sheet" icon across the app.
@@ -1306,43 +1289,13 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: colors.inkSoft,
   },
-  headerEditButton: {
-    minWidth: 64,
-    height: 36,
-    paddingHorizontal: spacing.sm,
-    borderRadius: radii.pill,
-    borderWidth: 1,
-    borderColor: colors.hairline,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  headerEditButtonLabel: {
-    fontFamily: fonts.bodySemiBold,
-    fontSize: 14,
-    color: colors.ink,
-  },
-  titleOverlay: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    top: 0,
-    bottom: 0,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  // Only applied when the close/edit buttons actually render (selectedSavedPlace) — the Welcome
-  // and add-place screens have no buttons to clear and should keep the title's full width rather
-  // than truncating for no reason. Clears both buttons (the wider 64pt-plus-gap edit button sets
-  // the tighter constraint) so long titles ellipsize before running under them; the buttons stay
-  // tappable underneath this overlay regardless (see pointerEvents="none" above).
-  titleOverlayWithButtons: {
-    paddingHorizontal: 80,
-  },
   title: {
+    flex: 1,
     fontFamily: fonts.headingSemiBold,
     fontSize: 22,
     color: colors.ink,
     textAlign: 'center',
+    marginHorizontal: spacing.sm,
   },
   selectedPlaceSubtitle: {
     fontFamily: fonts.body,
