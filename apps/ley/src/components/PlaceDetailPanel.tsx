@@ -46,7 +46,7 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 const SAVED_PLACE_COLUMNS =
-  'id, name, category, formatted_address, latitude, longitude, pin_photo_id, pin_thumbnail_path';
+  'id, name, category, formatted_address, latitude, longitude, pin_photo_id, pin_thumbnail_path, notes';
 const PHOTO_BUCKET = 'saved-place-photos';
 const PHOTO_SIGNED_URL_TTL_SECONDS = 60 * 60;
 const SAVED_PLACE_CARD_HEIGHT = 96;
@@ -222,6 +222,8 @@ export function PlaceDetailPanel({
   // to route through a re-render.
   const scrollOffsetRef = useRef(0);
   const [notes, setNotes] = useState('');
+  const [savingNotes, setSavingNotes] = useState(false);
+  const [notesError, setNotesError] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -265,6 +267,8 @@ export function PlaceDetailPanel({
   if ((selectedSavedPlace?.id ?? null) !== prevSelectedSavedPlaceId) {
     setPrevSelectedSavedPlaceId(selectedSavedPlace?.id ?? null);
     if (selectedSavedPlace && expansion === 'peeked') setExpansion('half');
+    setNotes(selectedSavedPlace?.notes ?? '');
+    setNotesError(null);
     setConfirmingDelete(false);
     setDeleteError(null);
     setUploadError(null);
@@ -548,6 +552,35 @@ export function PlaceDetailPanel({
     Linking.openURL(
       `https://maps.apple.com/?ll=${selectedSavedPlace.latitude},${selectedSavedPlace.longitude}`
     );
+  };
+
+  // Notes has no "Done"/save button of its own — everything else in edit mode (photos, pin) saves
+  // itself the moment it changes, so closing the panel is the one remaining point that needs to
+  // flush the notes text field before it's gone. Skips the network round-trip entirely when notes
+  // haven't actually changed from what's already stored.
+  const handleClose = async () => {
+    if (!selectedSavedPlace || savingNotes) {
+      onBack();
+      return;
+    }
+    if (notes === (selectedSavedPlace.notes ?? '')) {
+      onBack();
+      return;
+    }
+    setSavingNotes(true);
+    setNotesError(null);
+    const nextNotes = notes.trim() ? notes : null;
+    const { error } = await supabase
+      .from('saved_places')
+      .update({ notes: nextNotes })
+      .eq('id', selectedSavedPlace.id);
+    setSavingNotes(false);
+    if (error) {
+      setNotesError(error.message);
+      return;
+    }
+    onPlaceUpdated({ ...selectedSavedPlace, notes: nextNotes });
+    onBack();
   };
 
   const handleDeletePlace = async () => {
@@ -870,8 +903,17 @@ export function PlaceDetailPanel({
       <View {...headerPanResponder.panHandlers}>
         <View style={styles.headerRow}>
           {selectedSavedPlace ? (
-            <Pressable onPress={onBack} style={styles.headerCloseButton} hitSlop={8}>
-              <Text style={styles.headerCloseButtonIcon}>✕</Text>
+            <Pressable
+              onPress={handleClose}
+              disabled={savingNotes}
+              style={styles.headerCloseButton}
+              hitSlop={8}
+            >
+              {savingNotes ? (
+                <ActivityIndicator size="small" color={colors.inkSoft} />
+              ) : (
+                <Text style={styles.headerCloseButtonIcon}>✕</Text>
+              )}
             </Pressable>
           ) : (
             <View style={styles.headerCloseButtonSpacer} />
@@ -1091,6 +1133,8 @@ export function PlaceDetailPanel({
             ) : notes ? (
               <Text style={styles.notesText}>{notes}</Text>
             ) : null}
+
+            {notesError ? <Text style={styles.searchError}>{notesError}</Text> : null}
 
             {isEditing ? (
               <Pressable

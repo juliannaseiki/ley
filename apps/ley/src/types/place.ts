@@ -7,4 +7,5 @@ export type SavedPlace = {
   longitude: number;
   pin_photo_id: string | null;
   pin_thumbnail_path: string | null;
+  notes: string | null;
 };
