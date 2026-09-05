@@ -1285,9 +1285,14 @@ const styles = StyleSheet.create({
     marginLeft: 'auto',
     alignItems: 'flex-end',
   },
+  // Same 64pt width as headerEditButton (not a tight circle around the glyph) so the two header
+  // buttons carry equal visual weight — a centered title still looked lopsided flanked by a small
+  // circle on one side and a much wider pill on the other, even once it was mathematically
+  // centered on the row.
   headerCloseButton: {
-    width: 36,
+    minWidth: 64,
     height: 36,
+    paddingHorizontal: spacing.sm,
     borderRadius: radii.pill,
     borderWidth: 1,
     borderColor: colors.hairline,
