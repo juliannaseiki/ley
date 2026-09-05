@@ -866,23 +866,23 @@ export function PlaceDetailPanel({
       <View {...headerPanResponder.panHandlers}>
         <View style={styles.headerRow}>
           {selectedSavedPlace ? (
-            <Pressable onPress={onBack} style={styles.headerButton} hitSlop={8}>
-              <Text style={styles.headerButtonIcon}>‹</Text>
+            <Pressable onPress={onBack} style={styles.headerCloseButton} hitSlop={8}>
+              <Text style={styles.headerCloseButtonIcon}>×</Text>
             </Pressable>
           ) : (
-            <View style={styles.headerButtonSpacer} />
+            <View style={styles.headerCloseButtonSpacer} />
           )}
           <Text style={styles.title}>{title}</Text>
           {selectedSavedPlace ? (
             <Pressable
               onPress={() => setIsEditing((prev) => !prev)}
-              style={styles.headerButton}
+              style={styles.headerEditButton}
               hitSlop={8}
             >
-              <Text style={styles.headerButtonIcon}>{isEditing ? '✓' : '✎'}</Text>
+              <Text style={styles.headerEditButtonLabel}>{isEditing ? 'Done' : 'Edit'}</Text>
             </Pressable>
           ) : (
-            <View style={styles.headerButtonSpacer} />
+            <View style={styles.headerEditButtonSpacer} />
           )}
         </View>
       </View>
@@ -1262,19 +1262,44 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
     marginBottom: spacing.md,
   },
-  headerButton: {
+  headerCloseButton: {
     width: 36,
     height: 36,
+    borderRadius: radii.pill,
+    borderWidth: 1,
+    borderColor: colors.hairline,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  headerButtonSpacer: {
+  headerCloseButtonSpacer: {
     width: 36,
     height: 36,
   },
-  headerButtonIcon: {
+  headerCloseButtonIcon: {
     fontFamily: fonts.headingSemiBold,
-    fontSize: 21,
+    fontSize: 18,
+    color: colors.inkFaint,
+  },
+  // A fixed width (rather than sizing to content) keeps the button — and the title's centering,
+  // which depends on matching this width via headerEditButtonSpacer on the Welcome/add-place
+  // screens — stable across the "Edit"/"Done" label swap rather than shifting between the two.
+  headerEditButton: {
+    minWidth: 64,
+    height: 36,
+    paddingHorizontal: spacing.sm,
+    borderRadius: radii.pill,
+    borderWidth: 1,
+    borderColor: colors.hairline,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerEditButtonSpacer: {
+    minWidth: 64,
+    height: 36,
+  },
+  headerEditButtonLabel: {
+    fontFamily: fonts.bodySemiBold,
+    fontSize: 14,
     color: colors.inkFaint,
   },
   title: {
