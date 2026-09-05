@@ -153,6 +153,9 @@ type Props = {
   onPlaceDeleted: (placeId: string) => void;
   onPlaceUpdated: (place: SavedPlace) => void;
   onBack: () => void;
+  // Leaves edit mode without leaving the place — the header's top-left icon while editing ("‹"
+  // instead of "✕") calls this instead of onBack.
+  onExitEditing: () => void;
   onSelectPlace: (place: SavedPlace) => void;
 };
 
@@ -169,6 +172,7 @@ export function PlaceDetailPanel({
   onPlaceDeleted,
   onPlaceUpdated,
   onBack,
+  onExitEditing,
   onSelectPlace,
 }: Props) {
   const { session } = useAuth();
@@ -555,18 +559,11 @@ export function PlaceDetailPanel({
   };
 
   // Notes has no "Done"/save button of its own — everything else in edit mode (photos, pin) saves
-  // itself the moment it changes, so closing the panel is the one remaining point that needs to
-  // flush the notes text field before it's gone. Skips the network round-trip entirely when notes
-  // haven't actually changed from what's already stored.
-  const handleClose = async () => {
-    if (!selectedSavedPlace || savingNotes) {
-      onBack();
-      return;
-    }
-    if (notes === (selectedSavedPlace.notes ?? '')) {
-      onBack();
-      return;
-    }
+  // itself the moment it changes, so leaving edit mode (by either route below) is the one
+  // remaining point that needs to flush the notes text field before it's gone. Returns false (and
+  // leaves an error visible) if the save failed, so the caller can decide not to navigate away.
+  const saveNotesIfChanged = async (): Promise<boolean> => {
+    if (!selectedSavedPlace || notes === (selectedSavedPlace.notes ?? '')) return true;
     setSavingNotes(true);
     setNotesError(null);
     const nextNotes = notes.trim() ? notes : null;
@@ -577,10 +574,24 @@ export function PlaceDetailPanel({
     setSavingNotes(false);
     if (error) {
       setNotesError(error.message);
-      return;
+      return false;
     }
     onPlaceUpdated({ ...selectedSavedPlace, notes: nextNotes });
-    onBack();
+    return true;
+  };
+
+  // The header's top-left icon while viewing a place — closes the panel entirely (back to the
+  // Welcome/list screen).
+  const handleClose = async () => {
+    if (savingNotes) return;
+    if (await saveNotesIfChanged()) onBack();
+  };
+
+  // The same icon while editing (rendered as "‹" instead of "✕") — leaves edit mode but keeps the
+  // same place open, rather than leaving the panel altogether.
+  const handleExitEditing = async () => {
+    if (savingNotes) return;
+    if (await saveNotesIfChanged()) onExitEditing();
   };
 
   const handleDeletePlace = async () => {
@@ -904,7 +915,7 @@ export function PlaceDetailPanel({
         <View style={styles.headerRow}>
           {selectedSavedPlace ? (
             <Pressable
-              onPress={handleClose}
+              onPress={isEditing ? handleExitEditing : handleClose}
               disabled={savingNotes}
               style={styles.headerCloseButton}
               hitSlop={8}
@@ -912,7 +923,7 @@ export function PlaceDetailPanel({
               {savingNotes ? (
                 <ActivityIndicator size="small" color={colors.inkSoft} />
               ) : (
-                <Text style={styles.headerCloseButtonIcon}>✕</Text>
+                <Text style={styles.headerCloseButtonIcon}>{isEditing ? '‹' : '✕'}</Text>
               )}
             </Pressable>
           ) : (

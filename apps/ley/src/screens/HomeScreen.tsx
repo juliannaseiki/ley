@@ -250,6 +250,7 @@ export function HomeScreen() {
         onPlaceDeleted={handlePlaceDeleted}
         onPlaceUpdated={handlePlaceUpdated}
         onBack={handleBackToWelcome}
+        onExitEditing={() => setIsEditing(false)}
         onSelectPlace={handleSelectSavedPlace}
       />
 
