@@ -109,9 +109,10 @@ const PHOTO_COMPRESSION_QUALITY = 0.7;
 // handleSetPinPhoto, or a photo picked specifically for the pin via handleEditPin), not for every
 // photo in the gallery.
 const PIN_THUMBNAIL_DIMENSION = 64;
-// The pin-shape preview rendered next to "Edit pin" (LEY-54) — a UI element the user looks at
-// directly, so sized larger than the globe's own ~30px pin rather than matching it.
-const PIN_SHAPE_SIZE = 64;
+// The pin-shape preview rendered next to "Edit pin" (LEY-54) — sized to match the globe's own pin
+// exactly: PIN_RADIUS*2 CSS px in globe-entry.js, which are the same logical-pixel units as RN's
+// own point-based sizing here.
+const PIN_SHAPE_SIZE = 30;
 
 // Shared by every place a thumbnail gets generated: a fresh upload's first photo (handleAddPhoto,
 // from a local picker asset), an explicit re-pin of an already-uploaded photo (handleSetPinPhoto,
@@ -972,37 +973,6 @@ export function PlaceDetailPanel({
               </Text>
             ) : null}
 
-            <View style={styles.pinRow}>
-              <View style={styles.pinShapeOuter}>
-                <View style={styles.pinShapeInner}>
-                  {pinPreviewUrl ? (
-                    <Image source={{ uri: pinPreviewUrl }} style={styles.pinShapeImage} resizeMode="cover" />
-                  ) : (
-                    <Text style={styles.pinShapeEmoji}>{emojiForPlaceId(selectedSavedPlace.id)}</Text>
-                  )}
-                </View>
-              </View>
-              {isEditing ? (
-                <Pressable
-                  onPress={handleEditPin}
-                  disabled={editingPin}
-                  style={({ pressed }) => [
-                    styles.editPinButton,
-                    pressed && styles.mapsButtonPressed,
-                    editingPin && styles.addPlaceButtonDisabled,
-                  ]}
-                >
-                  {editingPin ? (
-                    <ActivityIndicator color={colors.inkSoft} />
-                  ) : (
-                    <Text style={styles.mapsButtonLabel}>Edit pin</Text>
-                  )}
-                </Pressable>
-              ) : null}
-            </View>
-
-            {editPinError ? <Text style={styles.searchError}>{editPinError}</Text> : null}
-
             {photos.length > 0 ? (
               <View style={styles.photoGrid}>
                 {getPhotoGridRows(photos).map((row, rowIndex) => (
@@ -1072,6 +1042,39 @@ export function PlaceDetailPanel({
                 </Pressable>
 
                 {uploadError ? <Text style={styles.searchError}>{uploadError}</Text> : null}
+
+                <View style={styles.pinRow}>
+                  <View style={styles.pinShapeOuter}>
+                    <View style={styles.pinShapeInner}>
+                      {pinPreviewUrl ? (
+                        <Image
+                          source={{ uri: pinPreviewUrl }}
+                          style={styles.pinShapeImage}
+                          resizeMode="cover"
+                        />
+                      ) : (
+                        <Text style={styles.pinShapeEmoji}>{emojiForPlaceId(selectedSavedPlace.id)}</Text>
+                      )}
+                    </View>
+                  </View>
+                  <Pressable
+                    onPress={handleEditPin}
+                    disabled={editingPin}
+                    style={({ pressed }) => [
+                      styles.editPinButton,
+                      pressed && styles.mapsButtonPressed,
+                      editingPin && styles.addPlaceButtonDisabled,
+                    ]}
+                  >
+                    {editingPin ? (
+                      <ActivityIndicator color={colors.inkSoft} />
+                    ) : (
+                      <Text style={styles.mapsButtonLabel}>Edit pin</Text>
+                    )}
+                  </Pressable>
+                </View>
+
+                {editPinError ? <Text style={styles.searchError}>{editPinError}</Text> : null}
               </>
             ) : null}
 
@@ -1325,8 +1328,10 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
   },
+  // Same 0.55 ratio as globe-entry.js's own PIN_FONT sizing, so the emoji fallback reads at the
+  // same relative size as it does on the actual globe pin.
   pinShapeEmoji: {
-    fontSize: PIN_SHAPE_SIZE * 0.4,
+    fontSize: Math.round(PIN_SHAPE_SIZE * 0.55),
   },
   editPinButton: {
     flex: 1,
