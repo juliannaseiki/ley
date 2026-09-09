@@ -150,8 +150,13 @@ function tierScaleForZoom(z) {
 const LAKE_MIN_ZOOM = 16;
 // Deeper than LAKE_MIN_ZOOM, on request — at any shallower zoom the full river network reads as
 // clutter crossing the coastlines/borders that are still the point at that scale, same reasoning
-// as lakes' own threshold above.
+// as lakes' own threshold above. RIVER_DETAIL_MIN_ZOOM reveals the smaller streams
+// build-globe-html.mjs splits out separately (RIVERS.detailArcs, everything past
+// RIVER_DETAIL_SCALERANK_CUTOFF there) once zoomed in deeper still — RIVER_MIN_ZOOM's own set
+// (RIVERS.majorArcs) stays visible the whole time past its own threshold, so this only ever adds
+// detail on top rather than swapping one set for another.
 const RIVER_MIN_ZOOM = 20;
+const RIVER_DETAIL_MIN_ZOOM = 50;
 // State/province borders finish fading in by this zoom — not pushed out deep like land's, above.
 const STATE_BORDER_MIN_ZOOM = 3;
 // State borders and their abbreviation labels fade in together over this same window, reaching
@@ -580,9 +585,20 @@ function renderInner() {
   // "water" idea as everything else blue on this map, not a third, competing accent color.
   if (zoom >= RIVER_MIN_ZOOM) {
     ctx.beginPath();
-    for (let i = 0; i < RIVERS.arcs.length; i++) {
-      if (cullByBbox(RIVERS.bboxes[i], capRadiusDeg)) {
-        landPath({ type: 'LineString', coordinates: RIVERS.arcs[i] });
+    for (let i = 0; i < RIVERS.majorArcs.length; i++) {
+      if (cullByBbox(RIVERS.majorBboxes[i], capRadiusDeg)) {
+        landPath({ type: 'LineString', coordinates: RIVERS.majorArcs[i] });
+      }
+    }
+    // Smaller streams (build-globe-html.mjs's RIVERS.detailArcs) layer on top once zoomed in past
+    // RIVER_DETAIL_MIN_ZOOM — added into the same path/stroke call as the major set above rather
+    // than a separate one, since they share the same style and there's nothing gained drawing them
+    // as a second stroke pass.
+    if (zoom >= RIVER_DETAIL_MIN_ZOOM) {
+      for (let i = 0; i < RIVERS.detailArcs.length; i++) {
+        if (cullByBbox(RIVERS.detailBboxes[i], capRadiusDeg)) {
+          landPath({ type: 'LineString', coordinates: RIVERS.detailArcs[i] });
+        }
       }
     }
     if (smoothLandThisFrame) smoothPathContext.flush();

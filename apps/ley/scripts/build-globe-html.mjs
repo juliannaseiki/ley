@@ -435,18 +435,29 @@ function loadLakes() {
 
 const lakes = loadLakes();
 
-// Rivers — drawn as open lines (not filled, unlike land/lakes above), only past RIVER_MIN_ZOOM in
-// globe-entry.js: at any shallower zoom the whole network reads as visual noise crossing the
+// Rivers — drawn as open lines (not filled, unlike land/lakes above). Two reveal tiers, both
+// sourced from the same file and split by Natural Earth's own scalerank field rather than two
+// separate downloads: "major" (scalerank <= RIVER_DETAIL_SCALERANK_CUTOFF) past RIVER_MIN_ZOOM in
+// globe-entry.js, "detail" (the smaller streams above that cutoff) past the deeper
+// RIVER_DETAIL_MIN_ZOOM — at any shallower zoom either set reads as visual noise crossing the
 // coastlines and borders that are the point at that scale, the same reasoning lakes' own
 // LAKE_MIN_ZOOM uses. Only the 10m tier is loaded for the same reason lakes only load one tier —
 // there's nothing to gain shipping a coarser version of a layer that's already zoom-gated this deep.
 //
-//   npx mapshaper -i ne_10m_rivers_lake_centerlines.geojson -simplify 35% keep-shapes \
+//   npx mapshaper -i ne_10m_rivers_lake_centerlines_scale_rank.geojson -simplify 35% keep-shapes \
 //     -filter-fields name,featurecla,scalerank -o format=topojson quantization=1e5 rivers-10m.json
 //
+// The "_scale_rank" edition, not the plain "rivers_lake_centerlines" file this used at first: the
+// plain file is curated down to ~1,455 features, which reads as rivers missing entirely once
+// zoomed in past where they'd normally be expected — the scale_rank edition is Natural Earth's
+// fuller ~4,200-feature version (same major rivers — 96% name-overlap confirmed against the plain
+// file directly — plus the smaller named/unnamed streams the plain file leaves out), with a
+// scalerank field precise enough to split by. Using one shared source for both tiers, rather than
+// a second file for the detail tier, guarantees they can never double-render the same river.
+//
 // 35%, matching the 10m country tier rather than lakes' more conservative 15%: rivers are already
-// far cheaper in aggregate (93k points total post-simplify vs lakes' pre-cull total), and no single
-// river comes close to land's giant-merged-piece problem (653 points for the largest, Niger — see
+// far cheaper in aggregate than lakes' pre-cull total, and no single river comes close to land's
+// giant-merged-piece problem (653 points for the largest in the plain file, the Niger — see
 // subdivideOversizedLandPieces above for why that specifically mattered there and doesn't here), so
 // there was no measured per-frame cost to trade against the way there was for lakes.
 //
@@ -462,16 +473,24 @@ const lakes = loadLakes();
 // which is also what a MultiLineString entry (a river Natural Earth split into multiple segments)
 // needs to become multiple independently-cullable arcs rather than one bbox spanning the whole
 // river's total extent.
+const RIVER_DETAIL_SCALERANK_CUTOFF = 5;
 function loadRivers() {
   const topology = JSON.parse(fs.readFileSync(path.join(root, 'scripts/data/rivers-10m.json'), 'utf8'));
-  const object = topology.objects.ne_10m_rivers;
+  const object = topology.objects.ne_10m_rivers_lake_centerlines_scale_rank;
   const riverFeatures = feature(topology, object).features.filter((f) => f.geometry);
-  const arcs = [];
+  const majorArcs = [];
+  const detailArcs = [];
   for (const f of riverFeatures) {
     const lines = f.geometry.type === 'MultiLineString' ? f.geometry.coordinates : [f.geometry.coordinates];
-    arcs.push(...lines);
+    const bucket = f.properties.scalerank <= RIVER_DETAIL_SCALERANK_CUTOFF ? majorArcs : detailArcs;
+    bucket.push(...lines);
   }
-  return { arcs, bboxes: arcs.map(bboxOf) };
+  return {
+    majorArcs,
+    majorBboxes: majorArcs.map(bboxOf),
+    detailArcs,
+    detailBboxes: detailArcs.map(bboxOf),
+  };
 }
 
 const rivers = loadRivers();
