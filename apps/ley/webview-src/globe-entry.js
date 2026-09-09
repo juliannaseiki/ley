@@ -499,17 +499,46 @@ function renderInner() {
   const countryTier = COUNTRY_TIERS[tierScale];
   const smoothLandThisFrame = capRadiusDeg < 90;
   const landPath = smoothLandThisFrame ? smoothPath : path;
+  // landPieces/landBboxes holds every ordinary (small/medium) landmass, same as always. A handful
+  // of enormous merged pieces (whole dissolved continents — build-globe-html.mjs's
+  // subdivideOversizedLandPieces) can't be bbox-culled as a single piece at all, since their bbox
+  // always overlaps the visible area for anyone zoomed in anywhere on the continent they belong
+  // to — those are pre-split at build time into landTileFillPieces, small enough tiles that this
+  // same per-piece cull actually filters most of them out once zoomed in on one part of one.
   ctx.beginPath();
   for (let i = 0; i < countryTier.landPieces.length; i++) {
     if (cullByBbox(countryTier.landBboxes[i], capRadiusDeg)) {
       landPath({ type: 'Polygon', coordinates: countryTier.landPieces[i] });
     }
   }
+  for (let i = 0; i < countryTier.landTileFillPieces.length; i++) {
+    if (cullByBbox(countryTier.landTileFillBboxes[i], capRadiusDeg)) {
+      landPath({ type: 'Polygon', coordinates: countryTier.landTileFillPieces[i] });
+    }
+  }
   if (smoothLandThisFrame) smoothPathContext.flush();
   ctx.fillStyle = THEME.land;
   ctx.fill();
   // Coastline/continent outline — heavier than the country-border weight below, per the line-
-  // weight hierarchy this tiered setup is built around.
+  // weight hierarchy this tiered setup is built around. A separate path from the fill above,
+  // deliberately: a tile from landTileFillPieces can't be stroked using its own boundary the way
+  // an ordinary piece's can — that boundary includes the synthetic straight edges introduced by
+  // slicing a continent into tiles at build time, which would draw as spurious lines cutting
+  // through solid land. landOutlineArcs holds only the real-coastline edges that survived that
+  // slicing (see its build-time comment) — retracing landPieces here for the ordinary pieces is
+  // cheap: it's the same small, already-culled-in set the fill loop above just traced.
+  ctx.beginPath();
+  for (let i = 0; i < countryTier.landPieces.length; i++) {
+    if (cullByBbox(countryTier.landBboxes[i], capRadiusDeg)) {
+      landPath({ type: 'Polygon', coordinates: countryTier.landPieces[i] });
+    }
+  }
+  for (let i = 0; i < countryTier.landOutlineArcs.length; i++) {
+    if (cullByBbox(countryTier.landOutlineBboxes[i], capRadiusDeg)) {
+      landPath({ type: 'LineString', coordinates: countryTier.landOutlineArcs[i] });
+    }
+  }
+  if (smoothLandThisFrame) smoothPathContext.flush();
   ctx.lineWidth = 0.8;
   ctx.strokeStyle = THEME.landStroke;
   ctx.stroke();
