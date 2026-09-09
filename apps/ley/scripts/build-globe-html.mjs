@@ -435,6 +435,96 @@ function loadLakes() {
 
 const lakes = loadLakes();
 
+// Rivers — drawn as open lines (not filled, unlike land/lakes above). Two reveal tiers, both
+// sourced from the same combined file and split by Natural Earth's own scalerank field rather
+// than separately per source file: "major" (scalerank <= RIVER_DETAIL_SCALERANK_CUTOFF) past
+// RIVER_MIN_ZOOM in globe-entry.js, "detail" (the smaller streams above that cutoff) past the
+// deeper RIVER_DETAIL_MIN_ZOOM — at any shallower zoom either set reads as visual noise crossing
+// the coastlines and borders that are the point at that scale, the same reasoning lakes' own
+// LAKE_MIN_ZOOM uses. Only the 10m tier is loaded for the same reason lakes only load one tier —
+// there's nothing to gain shipping a coarser version of a layer that's already zoom-gated this deep.
+//
+// Source is four Natural Earth files combined, not one — first tried just the global
+// ne_10m_rivers_lake_centerlines_scale_rank file, but even at ~4,200 features that one is still a
+// *generalized* compilation: checked directly against a real saved place (Burlington, VT), and it
+// carries only 4 rivers anywhere near it (none of them the Winooski the place's own address is
+// named after), while Natural Earth's separate supplementary "plus" files — regional data with
+// finer local source hydrography, published only for North America/Europe/Australia — carry 16 in
+// that same small area, the Winooski included. Confirmed these supplementary files are additive,
+// not overlapping duplicates of the global one, before combining them: only 4.9% of North
+// America's named rivers even share a name with the global file, and where a name does match
+// (e.g. "Mississippi" appears in both) the geometries are two entirely different real rivers, not
+// the same one twice — and every regional feature's own scalerank lands at 10+ (checked each
+// file's distribution directly), meaning they only ever add to the "detail" tier above, never the
+// "major" one.
+//
+//   node -e '
+//     const fs = require("fs");
+//     const files = [
+//       "ne_10m_rivers_lake_centerlines_scale_rank.geojson",
+//       "ne_10m_rivers_north_america.geojson",
+//       "ne_10m_rivers_europe.geojson",
+//       "ne_10m_rivers_australia.geojson",
+//     ];
+//     const combined = { type: "FeatureCollection", features: [] };
+//     for (const file of files) {
+//       for (const f of JSON.parse(fs.readFileSync(file, "utf8")).features) {
+//         if (!f.geometry) continue;
+//         combined.features.push({
+//           type: "Feature",
+//           properties: { name: f.properties.name || null, featurecla: f.properties.featurecla || null, scalerank: f.properties.scalerank },
+//           geometry: f.geometry,
+//         });
+//       }
+//     }
+//     fs.writeFileSync("rivers-combined-raw.geojson", JSON.stringify(combined));
+//   '
+//   npx mapshaper -i rivers-combined-raw.geojson -simplify 35% keep-shapes \
+//     -filter-fields name,featurecla,scalerank -rename-layers rivers \
+//     -o format=topojson quantization=1e5 rivers-10m.json
+//
+// 35%, matching the 10m country tier rather than lakes' more conservative 15%: rivers are already
+// far cheaper in aggregate than lakes' pre-cull total, and no single river comes close to land's
+// giant-merged-piece problem (653 points for the largest in the original global-only file, the
+// Niger — see subdivideOversizedLandPieces above for why that specifically mattered there and
+// doesn't here), so there was no measured per-frame cost to trade against the way there was for
+// lakes.
+//
+// "rivers_lake_centerlines" (not a plain rivers file) for the global component is deliberate:
+// Natural Earth's plain river layer stops a river's line at a lake's edge, which would read as the
+// river vanishing where it actually just widens into the lake already drawn as its own polygon —
+// this dataset instead carries a synthetic centerline straight through, so a river that flows
+// through a lake (the St. Lawrence through the Great Lakes, e.g.) still reads as one continuous
+// line on top of it.
+//
+// No merge()/polygonPiecesOf here: unlike land/lakes, individual rivers were never meant to dissolve
+// into one shape (two rivers happening to touch isn't the same "same country" relationship two
+// land pieces sharing a border have) — feature() keeps them as the separate named rivers they are,
+// which is also what a MultiLineString entry (a river Natural Earth split into multiple segments)
+// needs to become multiple independently-cullable arcs rather than one bbox spanning the whole
+// river's total extent.
+const RIVER_DETAIL_SCALERANK_CUTOFF = 5;
+function loadRivers() {
+  const topology = JSON.parse(fs.readFileSync(path.join(root, 'scripts/data/rivers-10m.json'), 'utf8'));
+  const object = topology.objects.rivers;
+  const riverFeatures = feature(topology, object).features.filter((f) => f.geometry);
+  const majorArcs = [];
+  const detailArcs = [];
+  for (const f of riverFeatures) {
+    const lines = f.geometry.type === 'MultiLineString' ? f.geometry.coordinates : [f.geometry.coordinates];
+    const bucket = f.properties.scalerank <= RIVER_DETAIL_SCALERANK_CUTOFF ? majorArcs : detailArcs;
+    bucket.push(...lines);
+  }
+  return {
+    majorArcs,
+    majorBboxes: majorArcs.map(bboxOf),
+    detailArcs,
+    detailBboxes: detailArcs.map(bboxOf),
+  };
+}
+
+const rivers = loadRivers();
+
 // State/province-level boundaries for every country, not just the US. world-atlas/us-atlas only
 // bundle country-level and US-only data respectively; no npm package wraps Natural Earth's global
 // admin-1 set, so this is our own locally-committed conversion. Source: Natural Earth's
@@ -688,6 +778,7 @@ const theme = {
   land: '#FFFFFF',
   landStroke: '#A3A3A3',
   lakeStroke: '#AFDCE9',
+  river: '#AFDCE9',
   countryBorder: '#A3A3A3',
   regionBorder: '#A3A3A3',
   globeOutline: '#A3A3A3',
@@ -736,6 +827,7 @@ const html = `<!DOCTYPE html>
 <script>
 window.COUNTRY_TIERS = ${embedAsJson(countryTiers)};
 window.LAKES = ${embedAsJson(lakes)};
+window.RIVERS = ${embedAsJson(rivers)};
 window.REGION_BORDER_ARCS = ${embedAsJson(regionBorderArcs)};
 window.REGION_BORDER_BBOXES = ${embedAsJson(regionBorderBboxes)};
 window.REGION_LABELS = ${embedAsJson(regionLabels)};
