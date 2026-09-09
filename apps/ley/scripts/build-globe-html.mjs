@@ -436,36 +436,66 @@ function loadLakes() {
 const lakes = loadLakes();
 
 // Rivers — drawn as open lines (not filled, unlike land/lakes above). Two reveal tiers, both
-// sourced from the same file and split by Natural Earth's own scalerank field rather than two
-// separate downloads: "major" (scalerank <= RIVER_DETAIL_SCALERANK_CUTOFF) past RIVER_MIN_ZOOM in
-// globe-entry.js, "detail" (the smaller streams above that cutoff) past the deeper
-// RIVER_DETAIL_MIN_ZOOM — at any shallower zoom either set reads as visual noise crossing the
-// coastlines and borders that are the point at that scale, the same reasoning lakes' own
+// sourced from the same combined file and split by Natural Earth's own scalerank field rather
+// than separately per source file: "major" (scalerank <= RIVER_DETAIL_SCALERANK_CUTOFF) past
+// RIVER_MIN_ZOOM in globe-entry.js, "detail" (the smaller streams above that cutoff) past the
+// deeper RIVER_DETAIL_MIN_ZOOM — at any shallower zoom either set reads as visual noise crossing
+// the coastlines and borders that are the point at that scale, the same reasoning lakes' own
 // LAKE_MIN_ZOOM uses. Only the 10m tier is loaded for the same reason lakes only load one tier —
 // there's nothing to gain shipping a coarser version of a layer that's already zoom-gated this deep.
 //
-//   npx mapshaper -i ne_10m_rivers_lake_centerlines_scale_rank.geojson -simplify 35% keep-shapes \
-//     -filter-fields name,featurecla,scalerank -o format=topojson quantization=1e5 rivers-10m.json
+// Source is four Natural Earth files combined, not one — first tried just the global
+// ne_10m_rivers_lake_centerlines_scale_rank file, but even at ~4,200 features that one is still a
+// *generalized* compilation: checked directly against a real saved place (Burlington, VT), and it
+// carries only 4 rivers anywhere near it (none of them the Winooski the place's own address is
+// named after), while Natural Earth's separate supplementary "plus" files — regional data with
+// finer local source hydrography, published only for North America/Europe/Australia — carry 16 in
+// that same small area, the Winooski included. Confirmed these supplementary files are additive,
+// not overlapping duplicates of the global one, before combining them: only 4.9% of North
+// America's named rivers even share a name with the global file, and where a name does match
+// (e.g. "Mississippi" appears in both) the geometries are two entirely different real rivers, not
+// the same one twice — and every regional feature's own scalerank lands at 10+ (checked each
+// file's distribution directly), meaning they only ever add to the "detail" tier above, never the
+// "major" one.
 //
-// The "_scale_rank" edition, not the plain "rivers_lake_centerlines" file this used at first: the
-// plain file is curated down to ~1,455 features, which reads as rivers missing entirely once
-// zoomed in past where they'd normally be expected — the scale_rank edition is Natural Earth's
-// fuller ~4,200-feature version (same major rivers — 96% name-overlap confirmed against the plain
-// file directly — plus the smaller named/unnamed streams the plain file leaves out), with a
-// scalerank field precise enough to split by. Using one shared source for both tiers, rather than
-// a second file for the detail tier, guarantees they can never double-render the same river.
+//   node -e '
+//     const fs = require("fs");
+//     const files = [
+//       "ne_10m_rivers_lake_centerlines_scale_rank.geojson",
+//       "ne_10m_rivers_north_america.geojson",
+//       "ne_10m_rivers_europe.geojson",
+//       "ne_10m_rivers_australia.geojson",
+//     ];
+//     const combined = { type: "FeatureCollection", features: [] };
+//     for (const file of files) {
+//       for (const f of JSON.parse(fs.readFileSync(file, "utf8")).features) {
+//         if (!f.geometry) continue;
+//         combined.features.push({
+//           type: "Feature",
+//           properties: { name: f.properties.name || null, featurecla: f.properties.featurecla || null, scalerank: f.properties.scalerank },
+//           geometry: f.geometry,
+//         });
+//       }
+//     }
+//     fs.writeFileSync("rivers-combined-raw.geojson", JSON.stringify(combined));
+//   '
+//   npx mapshaper -i rivers-combined-raw.geojson -simplify 35% keep-shapes \
+//     -filter-fields name,featurecla,scalerank -rename-layers rivers \
+//     -o format=topojson quantization=1e5 rivers-10m.json
 //
 // 35%, matching the 10m country tier rather than lakes' more conservative 15%: rivers are already
 // far cheaper in aggregate than lakes' pre-cull total, and no single river comes close to land's
-// giant-merged-piece problem (653 points for the largest in the plain file, the Niger — see
-// subdivideOversizedLandPieces above for why that specifically mattered there and doesn't here), so
-// there was no measured per-frame cost to trade against the way there was for lakes.
+// giant-merged-piece problem (653 points for the largest in the original global-only file, the
+// Niger — see subdivideOversizedLandPieces above for why that specifically mattered there and
+// doesn't here), so there was no measured per-frame cost to trade against the way there was for
+// lakes.
 //
-// "rivers_lake_centerlines" (not a plain rivers file) is deliberate: Natural Earth's plain river
-// layer stops a river's line at a lake's edge, which would read as the river vanishing where it
-// actually just widens into the lake already drawn as its own polygon — this dataset instead
-// carries a synthetic centerline straight through, so a river that flows through a lake (the St.
-// Lawrence through the Great Lakes, e.g.) still reads as one continuous line on top of it.
+// "rivers_lake_centerlines" (not a plain rivers file) for the global component is deliberate:
+// Natural Earth's plain river layer stops a river's line at a lake's edge, which would read as the
+// river vanishing where it actually just widens into the lake already drawn as its own polygon —
+// this dataset instead carries a synthetic centerline straight through, so a river that flows
+// through a lake (the St. Lawrence through the Great Lakes, e.g.) still reads as one continuous
+// line on top of it.
 //
 // No merge()/polygonPiecesOf here: unlike land/lakes, individual rivers were never meant to dissolve
 // into one shape (two rivers happening to touch isn't the same "same country" relationship two
@@ -476,7 +506,7 @@ const lakes = loadLakes();
 const RIVER_DETAIL_SCALERANK_CUTOFF = 5;
 function loadRivers() {
   const topology = JSON.parse(fs.readFileSync(path.join(root, 'scripts/data/rivers-10m.json'), 'utf8'));
-  const object = topology.objects.ne_10m_rivers_lake_centerlines_scale_rank;
+  const object = topology.objects.rivers;
   const riverFeatures = feature(topology, object).features.filter((f) => f.geometry);
   const majorArcs = [];
   const detailArcs = [];
