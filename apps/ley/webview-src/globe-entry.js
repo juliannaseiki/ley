@@ -420,6 +420,19 @@ function render() {
   }
 }
 
+// A real touchscreen can fire more pointermove events between two displayed frames than the
+// display actually shows (especially at 120Hz on ProMotion, where a fast drag can produce several
+// move events per rAF tick) — calling render() straight from the event handler paid for a full,
+// expensive redraw (every visible country/border/lake piece re-traced and smoothed) on every one
+// of those events, most of which were never actually shown on screen. requestRender() just flags
+// that a redraw is owed; tick()'s own rAF loop (already running unconditionally every frame, see
+// its call site at the bottom of this file) is what actually calls render(), once per displayed
+// frame no matter how many pointer events queued up before it ran.
+let renderQueued = false;
+function requestRender() {
+  renderQueued = true;
+}
+
 // The full recompute only runs at gesture end (see recomputeCityLabels), so during an active,
 // continuous zoom-out (finger still down) cityLabelState still holds whatever was showing before
 // the gesture started — a screen's worth of small towns from a much deeper zoom. Without this,
@@ -971,7 +984,8 @@ function tick(now) {
   const regionLabelFading =
     regionLabels.some((c) => now - c.fadeStartAt < LABEL_FADE_MS) ||
     fadingOutRegionLabels.some((c) => now - c.fadeOutStartAt < LABEL_FADE_MS);
-  if (cityFading || regionLabelFading) {
+  if (renderQueued || cityFading || regionLabelFading) {
+    renderQueued = false;
     render();
   }
   requestAnimationFrame(tick);
@@ -1045,7 +1059,7 @@ function onPointerMove(e) {
     rotation[0] += smoothedDx * rotSpeed;
     rotation[1] = clamp(rotation[1] - smoothedDy * rotSpeed, -85, 85);
     maybeRecomputeCityLabelsDuringGesture();
-    render();
+    requestRender();
   } else if (pointers.size === 2 && pinchStart) {
     const [a, b] = Array.from(pointers.values());
     const dist = distanceBetween(a, b);
@@ -1059,7 +1073,7 @@ function onPointerMove(e) {
       zoom = clamp(ratio * pinchStart.zoom, MIN_ZOOM, MAX_ZOOM);
       applyScale();
       maybeRecomputeCityLabelsDuringGesture();
-      render();
+      requestRender();
     }
   }
 }
