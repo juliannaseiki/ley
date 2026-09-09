@@ -6,6 +6,7 @@
 import { build } from 'esbuild';
 import { feature, mesh, merge } from 'topojson-client';
 import { geoArea, geoCentroid } from 'd3-geo';
+import polygonClipping from 'polygon-clipping';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -137,6 +138,186 @@ function polygonPiecesOf(geometry) {
   return { pieces: polygons, bboxes: polygons.map(bboxOf) };
 }
 
+// merge() dissolves every touching country into one shape, and a handful of the resulting pieces
+// are enormous — the merged Afro-Eurasian landmass alone is ~29,000 vertices, the merged Americas
+// ~22,000 (measured directly against the actual 10m tier output). cullByBbox in
+// webview-src/globe-entry.js can never drop any of that: its bbox always overlaps the visible area
+// for anyone zoomed in anywhere on the actual continent it belongs to, which is most of the
+// populated world — the single biggest lever on deep-zoom performance found for this app (a real
+// user-reported slowdown once zoomed in). This splits any piece over LAND_TILE_VERTEX_THRESHOLD
+// into a grid of LAND_TILE_SIZE_DEG-wide tiles (via polygon-clipping's exact intersection) so the
+// renderer can finally drop the off-screen bulk of one of these once zoomed in on a small part of
+// it, the same way every other, smaller piece already could.
+//
+// A tile's fill can just reuse the ordinary closed-Polygon rendering (landPath in globe-entry.js)
+// completely unchanged — cutting a solid-filled shape into abutting tiles is invisible once filled,
+// since there's no gap or overlap at a shared tile edge. Its OUTLINE can't reuse that same geometry
+// for stroke, though: stroking every tile's own boundary would draw the synthetic cut lines running
+// through the middle of a continent as if they were real coastline. So each tile also gets its
+// real-coastline-only edges split out separately (see realEdgeArcsOf below) — an edge whose
+// endpoints both sit exactly on the tile's own clip boundary is synthetic and dropped; only edges
+// that survive from the original ring are kept, as open LineString runs the renderer strokes
+// (bbox-culled the same way as everything else) instead of closing them into the tile shape itself.
+const LAND_TILE_VERTEX_THRESHOLD = 1000;
+const LAND_TILE_SIZE_DEG = 20;
+// Real coastline points are arbitrary real-world decimals; the grid lines below are round numbers
+// chosen here — the two essentially never coincide by accident, so "is this vertex within a hair of
+// one of the tile's 4 boundary lines" reliably tells a clip-introduced point apart from a genuine
+// one, without needing polygon-clipping to report provenance itself.
+const TILE_BOUNDARY_EPSILON_DEG = 1e-7;
+
+// A ring's stored longitudes jump by ~360 at the antimeridian if the landmass crosses it (Russia's
+// Chukotka peninsula, the Aleutians, Antarctica's every-longitude sweep near the pole) — meaningless
+// for grid tiling in raw form, since a "20°-wide tile" isn't well-defined across a discontinuity.
+// Every consumer of this data downstream (d3-geo's projection, and this file's own/
+// globe-entry.js's angularDistanceDeg-based helpers) works entirely through cos/sin of longitude,
+// which are already 360°-periodic — so a ring can just be walked once, nudging each point by
+// whatever multiple of 360 keeps it within 180° of the previous point, and the result is safe to
+// tile/clip/ship as-is, with no need to ever wrap it back into the conventional -180..180 range
+// afterward (that periodicity is exactly why cullByBbox's law-of-cosines distance still comes out
+// correct for an out-of-range longitude like 190° — cos(190 - x) is identical to cos(-170 - x)).
+function unwrapRing(ring) {
+  const out = [ring[0].slice()];
+  for (let i = 1; i < ring.length; i++) {
+    let [lon, lat] = ring[i];
+    const prevLon = out[i - 1][0];
+    while (lon - prevLon > 180) lon -= 360;
+    while (lon - prevLon < -180) lon += 360;
+    out.push([lon, lat]);
+  }
+  return out;
+}
+
+function ringsBounds(rings) {
+  const b = { minLon: Infinity, minLat: Infinity, maxLon: -Infinity, maxLat: -Infinity };
+  for (const ring of rings) {
+    for (const [lon, lat] of ring) {
+      if (lon < b.minLon) b.minLon = lon;
+      if (lon > b.maxLon) b.maxLon = lon;
+      if (lat < b.minLat) b.minLat = lat;
+      if (lat > b.maxLat) b.maxLat = lat;
+    }
+  }
+  return b;
+}
+
+function isOnTileBoundary(lon, lat, tx0, ty0, tx1, ty1) {
+  return (
+    Math.abs(lon - tx0) < TILE_BOUNDARY_EPSILON_DEG ||
+    Math.abs(lon - tx1) < TILE_BOUNDARY_EPSILON_DEG ||
+    Math.abs(lat - ty0) < TILE_BOUNDARY_EPSILON_DEG ||
+    Math.abs(lat - ty1) < TILE_BOUNDARY_EPSILON_DEG
+  );
+}
+
+// Walks every ring of one clipped tile (its outer boundary and any holes alike — a hole's shore is
+// real coastline too, e.g. the Caspian Sea) and breaks each into the open LineString runs that
+// survive as real coastline, dropping any edge that's synthetic (introduced by clipping against
+// this tile's own boundary) per isOnTileBoundary above. Ring coordinate arrays are self-closing
+// (first point repeats as the last), so a plain consecutive walk already covers the full loop with
+// no separate wrap-around case to handle.
+function realEdgeArcsOf(rings, tx0, ty0, tx1, ty1) {
+  const arcs = [];
+  for (const ring of rings) {
+    let current = [ring[0]];
+    for (let i = 1; i < ring.length; i++) {
+      const prev = ring[i - 1];
+      const point = ring[i];
+      const edgeIsSynthetic =
+        isOnTileBoundary(prev[0], prev[1], tx0, ty0, tx1, ty1) &&
+        isOnTileBoundary(point[0], point[1], tx0, ty0, tx1, ty1);
+      if (edgeIsSynthetic) {
+        if (current.length > 1) arcs.push(current);
+        current = [point];
+      } else {
+        current.push(point);
+      }
+    }
+    if (current.length > 1) arcs.push(current);
+  }
+  return arcs;
+}
+
+function subdividePiece(piece) {
+  const unwrapped = piece.map(unwrapRing);
+  const bounds = ringsBounds(unwrapped);
+
+  const tileFillPieces = [];
+  const tileFillBboxes = [];
+  const outlineArcs = [];
+  const outlineBboxes = [];
+
+  const startCol = Math.floor(bounds.minLon / LAND_TILE_SIZE_DEG);
+  const endCol = Math.ceil(bounds.maxLon / LAND_TILE_SIZE_DEG);
+  const startRow = Math.floor(bounds.minLat / LAND_TILE_SIZE_DEG);
+  const endRow = Math.ceil(bounds.maxLat / LAND_TILE_SIZE_DEG);
+
+  for (let col = startCol; col < endCol; col++) {
+    const tx0 = col * LAND_TILE_SIZE_DEG;
+    const tx1 = tx0 + LAND_TILE_SIZE_DEG;
+    for (let row = startRow; row < endRow; row++) {
+      const ty0 = row * LAND_TILE_SIZE_DEG;
+      const ty1 = ty0 + LAND_TILE_SIZE_DEG;
+      const clipBox = [
+        [
+          [tx0, ty0],
+          [tx1, ty0],
+          [tx1, ty1],
+          [tx0, ty1],
+          [tx0, ty0],
+        ],
+      ];
+      const clipped = polygonClipping.intersection(unwrapped, clipBox);
+      for (const polygon of clipped) {
+        // polygon-clipping winds rings by its own (planar, CCW-exterior) convention, not
+        // necessarily d3-geo's spherical one (enclosed area under half the sphere — see the
+        // rewindGeometry comment at the top of this file) — every tile is small enough here
+        // (well under half the sphere) that the same per-ring area check applies cleanly.
+        // Skipping this produced tiles whose winding disagreed with d3-geo's convention, which
+        // clips them to their *complement* at render time — caught by summing geoArea across
+        // every tile and finding it wildly exceeded the sphere's own total surface area.
+        rewindPolygonCoords(polygon);
+        tileFillPieces.push(polygon);
+        tileFillBboxes.push([tx0, ty0, tx1, ty1]);
+        for (const arc of realEdgeArcsOf(polygon, tx0, ty0, tx1, ty1)) {
+          outlineArcs.push(arc);
+          outlineBboxes.push(bboxOf(arc));
+        }
+      }
+    }
+  }
+
+  return { tileFillPieces, tileFillBboxes, outlineArcs, outlineBboxes };
+}
+
+// Call site: replaces any piece over the threshold with its tile decomposition; every other piece
+// (the vast majority — small and medium countries/islands, already cullable as a whole) passes
+// through untouched.
+function subdivideOversizedLandPieces(pieces, bboxes) {
+  const keptPieces = [];
+  const keptBboxes = [];
+  const tileFillPieces = [];
+  const tileFillBboxes = [];
+  const outlineArcs = [];
+  const outlineBboxes = [];
+
+  pieces.forEach((piece, i) => {
+    const vertexCount = piece.reduce((sum, ring) => sum + ring.length, 0);
+    if (vertexCount <= LAND_TILE_VERTEX_THRESHOLD) {
+      keptPieces.push(piece);
+      keptBboxes.push(bboxes[i]);
+      return;
+    }
+    const subdivided = subdividePiece(piece);
+    tileFillPieces.push(...subdivided.tileFillPieces);
+    tileFillBboxes.push(...subdivided.tileFillBboxes);
+    outlineArcs.push(...subdivided.outlineArcs);
+    outlineBboxes.push(...subdivided.outlineBboxes);
+  });
+
+  return { keptPieces, keptBboxes, tileFillPieces, tileFillBboxes, outlineArcs, outlineBboxes };
+}
+
 // Only the 110m tier (zoom 1-4, where the whole front hemisphere is on screen at once) gets
 // tiny-feature dropping — at that zoom, every disjoint landmass down to the smallest uninhabited
 // rock reads as a fleck of dirt scattered across the ocean rather than actual geography. The
@@ -166,29 +347,49 @@ function loadCountryTier(scale) {
   const borderArcsAll = borderGeoJson.coordinates;
   const borderBboxesAll = borderArcsAll.map(bboxOf);
 
-  if (scale !== '110m') {
-    return { landPieces: landPiecesAll, landBboxes: landBboxesAll, borderArcs: borderArcsAll, borderBboxes: borderBboxesAll };
+  let landPieces = landPiecesAll;
+  let landBboxes = landBboxesAll;
+  let borderArcs = borderArcsAll;
+  let borderBboxes = borderBboxesAll;
+
+  if (scale === '110m') {
+    landPieces = [];
+    landBboxes = [];
+    landPiecesAll.forEach((piece, i) => {
+      if (!isTinyBbox(landBboxesAll[i])) {
+        landPieces.push(piece);
+        landBboxes.push(landBboxesAll[i]);
+      }
+    });
+    // Border arcs belonging entirely to a dropped tiny piece would draw a border line with no land
+    // beneath it, so they're dropped by the same size test rather than by cross-referencing which
+    // country each arc came from.
+    borderArcs = [];
+    borderBboxes = [];
+    borderArcsAll.forEach((arc, i) => {
+      if (!isTinyBbox(borderBboxesAll[i])) {
+        borderArcs.push(arc);
+        borderBboxes.push(borderBboxesAll[i]);
+      }
+    });
   }
-  const landPieces = [];
-  const landBboxes = [];
-  landPiecesAll.forEach((piece, i) => {
-    if (!isTinyBbox(landBboxesAll[i])) {
-      landPieces.push(piece);
-      landBboxes.push(landBboxesAll[i]);
-    }
-  });
-  // Border arcs belonging entirely to a dropped tiny piece would draw a border line with no land
-  // beneath it, so they're dropped by the same size test rather than by cross-referencing which
-  // country each arc came from.
-  const borderArcs = [];
-  const borderBboxes = [];
-  borderArcsAll.forEach((arc, i) => {
-    if (!isTinyBbox(borderBboxesAll[i])) {
-      borderArcs.push(arc);
-      borderBboxes.push(borderBboxesAll[i]);
-    }
-  });
-  return { landPieces, landBboxes, borderArcs, borderBboxes };
+
+  // See subdivideOversizedLandPieces above — the merged landmass's few enormous pieces (whole
+  // dissolved continents) get replaced here by a tile decomposition; everything else passes
+  // through unchanged.
+  const { keptPieces, keptBboxes, tileFillPieces, tileFillBboxes, outlineArcs, outlineBboxes } =
+    subdivideOversizedLandPieces(landPieces, landBboxes);
+
+  return {
+    landPieces: keptPieces,
+    landBboxes: keptBboxes,
+    landTileFillPieces: tileFillPieces,
+    landTileFillBboxes: tileFillBboxes,
+    landOutlineArcs: outlineArcs,
+    landOutlineBboxes: outlineBboxes,
+    borderArcs,
+    borderBboxes,
+  };
 }
 
 const countryTiers = {
