@@ -6,7 +6,7 @@ import { drawCityLabels, cityLabelFont } from './city-labels/render.js';
 
 // COUNTRY_TIERS, LAKES, REGION_BORDER_ARCS, REGION_BORDER_BBOXES, REGION_LABELS,
 // US_STATE_LABELS, CITIES, and THEME are injected as globals by the HTML wrapper at build time.
-/* global COUNTRY_TIERS, LAKES, REGION_BORDER_ARCS, REGION_BORDER_BBOXES, REGION_LABELS, US_STATE_LABELS, CITIES, THEME */
+/* global COUNTRY_TIERS, LAKES, RIVERS, REGION_BORDER_ARCS, REGION_BORDER_BBOXES, REGION_LABELS, US_STATE_LABELS, CITIES, THEME */
 
 // Temporary flag — region labels are getting a hand-drawn redesign, so they're switched off here
 // rather than removed: the curve-fitting and recompute logic underneath is all still intact and
@@ -148,6 +148,10 @@ function tierScaleForZoom(z) {
 // right at that transition. By zoom 16 the cull radius has tightened enough (~9°) that lakes cost
 // meaningfully less per frame regardless of which region is on screen.
 const LAKE_MIN_ZOOM = 16;
+// Deeper than LAKE_MIN_ZOOM, on request — at any shallower zoom the full river network reads as
+// clutter crossing the coastlines/borders that are still the point at that scale, same reasoning
+// as lakes' own threshold above.
+const RIVER_MIN_ZOOM = 20;
 // State/province borders finish fading in by this zoom — not pushed out deep like land's, above.
 const STATE_BORDER_MIN_ZOOM = 3;
 // State borders and their abbreviation labels fade in together over this same window, reaching
@@ -565,6 +569,25 @@ function renderInner() {
     ctx.fill();
     ctx.lineWidth = 0.4;
     ctx.strokeStyle = THEME.lakeStroke;
+    ctx.stroke();
+  }
+
+  // Rivers — only drawn past RIVER_MIN_ZOOM (deeper than lakes', see its definition above). Open
+  // lines, not a closed shape, so there's nothing to fill — landPath (smoothed the same as
+  // coastlines/lake shores, since a river's whole visual identity is its winding path) traces each
+  // one and only the stroke below actually draws it. Same water-family color as lake shores
+  // (THEME.river, deliberately the same value as THEME.lakeStroke) so a river reads as the same
+  // "water" idea as everything else blue on this map, not a third, competing accent color.
+  if (zoom >= RIVER_MIN_ZOOM) {
+    ctx.beginPath();
+    for (let i = 0; i < RIVERS.arcs.length; i++) {
+      if (cullByBbox(RIVERS.bboxes[i], capRadiusDeg)) {
+        landPath({ type: 'LineString', coordinates: RIVERS.arcs[i] });
+      }
+    }
+    if (smoothLandThisFrame) smoothPathContext.flush();
+    ctx.lineWidth = 0.5;
+    ctx.strokeStyle = THEME.river;
     ctx.stroke();
   }
 
