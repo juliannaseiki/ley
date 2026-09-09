@@ -503,7 +503,17 @@ const lakes = loadLakes();
 // which is also what a MultiLineString entry (a river Natural Earth split into multiple segments)
 // needs to become multiple independently-cullable arcs rather than one bbox spanning the whole
 // river's total extent.
-const RIVER_DETAIL_SCALERANK_CUTOFF = 5;
+// Raised from 5 after a user report that RIVER_MIN_ZOOM "wasn't working" — no code bug: traced
+// the actual cull+draw path and separately ran a real orthographic-projection on-screen check
+// against the shipped data, both confirmed major-tier rivers genuinely do render at zoom 20
+// wherever one happens to be nearby. The problem was the cutoff being too strict — at 5, only
+// ~1,048 arcs qualify as "major" globally, sparse enough that a random zoom-20 view had *no*
+// major river on screen 44.5% of the time in a 200-sample check (vs. 24% for the far denser
+// detail tier — roughly the fraction of views that are just open ocean/desert with nothing to
+// show regardless of tier). At 9, ~4,171 arcs qualify, cutting that empty-view rate to 27.5% —
+// close to the same "genuinely nothing here" floor the detail tier already has. Re-run the same
+// check (see this constant's own git history for the sampling script) before tuning further.
+const RIVER_DETAIL_SCALERANK_CUTOFF = 9;
 function loadRivers() {
   const topology = JSON.parse(fs.readFileSync(path.join(root, 'scripts/data/rivers-10m.json'), 'utf8'));
   const object = topology.objects.rivers;
