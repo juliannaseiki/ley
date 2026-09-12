@@ -520,12 +520,22 @@ function renderInner() {
       landPath({ type: 'Polygon', coordinates: countryTier.landPieces[i] });
     }
   }
+  if (smoothLandThisFrame) smoothPathContext.flush();
+  // Deliberately plain `path`, never `landPath` — a tile's own boundary is a mix of real coastline
+  // and the synthetic straight edges introduced by slicing a continent into tiles at build time,
+  // and rounding those synthetic edges' corners (this smoothing's whole job) visibly pulls each
+  // tile's fill inward from its true straight edge. Filled by itself that's invisible (one tile's
+  // fill just gets a hair smaller), but two ADJACENT tiles each pulling inward from the exact same
+  // shared edge opens a real gap between them — read as a "sparkle"/star where the ocean shows
+  // through, confirmed by reproducing this exact combined-fill sequence outside the app and finding
+  // it reliably vanishes the moment tile fill switches from smoothPath to plain path. Real coastline
+  // still gets its smoothing — just from the separate, real-edges-only outline stroke pass below,
+  // not from this fill.
   for (let i = 0; i < countryTier.landTileFillPieces.length; i++) {
     if (cullByBbox(countryTier.landTileFillBboxes[i], capRadiusDeg)) {
-      landPath({ type: 'Polygon', coordinates: countryTier.landTileFillPieces[i] });
+      path({ type: 'Polygon', coordinates: countryTier.landTileFillPieces[i] });
     }
   }
-  if (smoothLandThisFrame) smoothPathContext.flush();
   ctx.fillStyle = THEME.land;
   ctx.fill();
   // Coastline/continent outline — heavier than the country-border weight below, per the line-
