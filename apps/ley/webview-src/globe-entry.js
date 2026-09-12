@@ -581,9 +581,9 @@ function renderInner() {
   // one is a filled, tapered ribbon polygon (build-globe-html.mjs's riverRibbonOf — full width at
   // the mouth, narrowing to a point at the source) rather than a constant-width stroked line, so a
   // river reads with actual visual volume instead of a wire outline (matching a real hand-drawn
-  // reference map, where rivers are solid tapered shapes, not lines). Same water-family color as
-  // lake shores (THEME.river, deliberately the same value as THEME.lakeStroke) so a river reads as
-  // the same "water" idea as everything else blue on this map, not a third, competing accent color.
+  // reference map, where rivers are solid tapered shapes, not lines). Filled with the same
+  // oceanGradient a lake's own body is (not lakeStroke's blue rim) so a river reads as the same pale
+  // "water" idea as a lake's interior, rather than a solid, more saturated shape competing with it.
   if (zoom >= RIVER_MIN_ZOOM) {
     ctx.beginPath();
     for (let i = 0; i < RIVERS.majorRibbons.length; i++) {
@@ -603,7 +603,7 @@ function renderInner() {
       }
     }
     if (smoothLandThisFrame) smoothPathContext.flush();
-    ctx.fillStyle = THEME.river;
+    ctx.fillStyle = oceanGradient;
     ctx.fill();
   }
 
