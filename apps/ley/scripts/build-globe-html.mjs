@@ -165,6 +165,17 @@ const LAND_TILE_SIZE_DEG = 20;
 // one of the tile's 4 boundary lines" reliably tells a clip-introduced point apart from a genuine
 // one, without needing polygon-clipping to report provenance itself.
 const TILE_BOUNDARY_EPSILON_DEG = 1e-7;
+// Two adjacent tiles are each clipped independently (separate polygon-clipping.intersection calls),
+// so their shared edge isn't guaranteed to land on bit-identical coordinates on both sides — a
+// user-reported "sparkle"/4-pointed-star artifact turned out to be exactly this: hairline gaps at
+// tile seams (worst right at a grid corner, where two such gaps cross), invisible while the ocean
+// fill was near-white but exposed once it darkened to a real blue. Expanding each tile's own clip
+// box by this margin before intersecting makes adjacent tiles overlap by a real, visible-at-any-
+// realistic-zoom amount instead of exactly touching, so a hairline seam has no gap to open up in.
+// Sized against the shallowest zoom that ever renders a tiled tier (MIN_ZOOM, where the 50m tier is
+// already active) rather than TILE_BOUNDARY_EPSILON_DEG's floating-point scale, since the failure
+// mode is screen-pixel coverage at render time, not clipping precision.
+const TILE_OVERLAP_MARGIN_DEG = 0.15;
 
 // A ring's stored longitudes jump by ~360 at the antimeridian if the landmass crosses it (Russia's
 // Chukotka peninsula, the Aleutians, Antarctica's every-longitude sweep near the pole) — meaningless
@@ -253,18 +264,27 @@ function subdividePiece(piece) {
   const endRow = Math.ceil(bounds.maxLat / LAND_TILE_SIZE_DEG);
 
   for (let col = startCol; col < endCol; col++) {
+    // The clip box actually used (cx0..cy1) is widened past the tile's own nominal grid line
+    // (tx0..ty1) by TILE_OVERLAP_MARGIN_DEG on every side, so this tile's fill deliberately extends
+    // a bit into each neighbor's territory — see that constant's own comment for why. Everything
+    // downstream (the synthetic-vs-real edge test, the tile's own bbox) is keyed off the widened
+    // box, since that's the boundary this tile's clipped output actually has.
     const tx0 = col * LAND_TILE_SIZE_DEG;
     const tx1 = tx0 + LAND_TILE_SIZE_DEG;
+    const cx0 = tx0 - TILE_OVERLAP_MARGIN_DEG;
+    const cx1 = tx1 + TILE_OVERLAP_MARGIN_DEG;
     for (let row = startRow; row < endRow; row++) {
       const ty0 = row * LAND_TILE_SIZE_DEG;
       const ty1 = ty0 + LAND_TILE_SIZE_DEG;
+      const cy0 = ty0 - TILE_OVERLAP_MARGIN_DEG;
+      const cy1 = ty1 + TILE_OVERLAP_MARGIN_DEG;
       const clipBox = [
         [
-          [tx0, ty0],
-          [tx1, ty0],
-          [tx1, ty1],
-          [tx0, ty1],
-          [tx0, ty0],
+          [cx0, cy0],
+          [cx1, cy0],
+          [cx1, cy1],
+          [cx0, cy1],
+          [cx0, cy0],
         ],
       ];
       const clipped = polygonClipping.intersection(unwrapped, clipBox);
@@ -278,8 +298,8 @@ function subdividePiece(piece) {
         // every tile and finding it wildly exceeded the sphere's own total surface area.
         rewindPolygonCoords(polygon);
         tileFillPieces.push(polygon);
-        tileFillBboxes.push([tx0, ty0, tx1, ty1]);
-        for (const arc of realEdgeArcsOf(polygon, tx0, ty0, tx1, ty1)) {
+        tileFillBboxes.push([cx0, cy0, cx1, cy1]);
+        for (const arc of realEdgeArcsOf(polygon, cx0, cy0, cx1, cy1)) {
           outlineArcs.push(arc);
           outlineBboxes.push(bboxOf(arc));
         }
