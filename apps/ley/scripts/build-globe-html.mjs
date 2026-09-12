@@ -952,11 +952,11 @@ const cityCellsObj = Object.fromEntries(cityCells);
 const theme = {
   // '#fbfdfe' (near-white) read as barely-visible once lakes/rivers switched to filling with this
   // same value — darkened to '#AFDCE9' (this app's old lake/river accent color) to fix that, then
-  // lightened partway back on request once that read as too saturated across the whole ocean. This
-  // is '#AFDCE9' blended ~45% toward white — enough to read as clearly blue rather than near-white,
-  // without being as heavy as the accent color it's blended from.
-  oceanLight: '#D3ECF3',
-  oceanDeep: '#D3ECF3',
+  // lightened back in two rounds once that read as too saturated across the whole ocean: first to
+  // '#D3ECF3' (~45% of the way to white), then further to this, '#AFDCE9' blended ~70% toward
+  // white — still clearly blue, just further back as background than either previous value.
+  oceanLight: '#E3F3F7',
+  oceanDeep: '#E3F3F7',
   land: '#FFFFFF',
   landStroke: '#A3A3A3',
   countryBorder: '#A3A3A3',
