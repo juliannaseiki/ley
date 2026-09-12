@@ -943,8 +943,12 @@ cities.forEach(([, lon, lat], index) => {
 const cityCellsObj = Object.fromEntries(cityCells);
 
 const theme = {
-  oceanLight: '#fbfdfe',
-  oceanDeep: '#fbfdfe',
+  // '#fbfdfe' (near-white) read as barely-visible once lakes/rivers switched to filling with this
+  // same value — darkened to the light blue this app previously used for the lake/river accent
+  // color (before that got folded into this shared fill), a shade already vetted for water here
+  // rather than a newly-invented one.
+  oceanLight: '#AFDCE9',
+  oceanDeep: '#AFDCE9',
   land: '#FFFFFF',
   landStroke: '#A3A3A3',
   countryBorder: '#A3A3A3',
