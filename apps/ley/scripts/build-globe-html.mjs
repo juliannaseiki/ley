@@ -947,7 +947,6 @@ const theme = {
   oceanDeep: '#fbfdfe',
   land: '#FFFFFF',
   landStroke: '#A3A3A3',
-  lakeStroke: '#AFDCE9',
   countryBorder: '#A3A3A3',
   regionBorder: '#A3A3A3',
   globeOutline: '#A3A3A3',

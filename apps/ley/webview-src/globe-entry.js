@@ -558,10 +558,11 @@ function renderInner() {
   // on Earth — small enough on screen that a filled/outlined shape looked like stray specks rather
   // than real geography. Filled with the same ocean gradient as the sphere fill above (rather than
   // a separate flat land/white color) so a lake reads as one continuous idea of "water" instead of
-  // a similar-but-not-quite-identical gap in the land; outlined in THEME.lakeStroke (a light blue,
-  // a shade darker than the ocean fill) rather than landStroke's gray, so the shore reads as
-  // "water's edge" and not another gray map line. Same per-piece bbox-cull + cull-driven-smoothing
-  // approach as every other detail layer.
+  // a similar-but-not-quite-identical gap in the land. No stroke — rivers fill with this same
+  // oceanGradient and have no outline of their own, and a stroked lake next to an unstroked river
+  // read as an inconsistency between two things meant to be the same "water" idea; dropping it here
+  // (rather than adding a matching stroke to rivers) keeps both at the plainer, one-color-fill
+  // treatment. Same per-piece bbox-cull + cull-driven-smoothing approach as every other detail layer.
   if (zoom >= LAKE_MIN_ZOOM) {
     ctx.beginPath();
     for (let i = 0; i < LAKES.pieces.length; i++) {
@@ -572,9 +573,6 @@ function renderInner() {
     if (smoothLandThisFrame) smoothPathContext.flush();
     ctx.fillStyle = oceanGradient;
     ctx.fill();
-    ctx.lineWidth = 0.4;
-    ctx.strokeStyle = THEME.lakeStroke;
-    ctx.stroke();
   }
 
   // Rivers — only drawn past RIVER_MIN_ZOOM (deeper than lakes', see its definition above). Each
@@ -582,8 +580,8 @@ function renderInner() {
   // the mouth, narrowing to a point at the source) rather than a constant-width stroked line, so a
   // river reads with actual visual volume instead of a wire outline (matching a real hand-drawn
   // reference map, where rivers are solid tapered shapes, not lines). Filled with the same
-  // oceanGradient a lake's own body is (not lakeStroke's blue rim) so a river reads as the same pale
-  // "water" idea as a lake's interior, rather than a solid, more saturated shape competing with it.
+  // oceanGradient a lake's body is, no stroke, so a river reads as the same plain "water" idea as a
+  // lake rather than a competing, differently-treated shape.
   if (zoom >= RIVER_MIN_ZOOM) {
     ctx.beginPath();
     for (let i = 0; i < RIVERS.majorRibbons.length; i++) {
