@@ -514,6 +514,164 @@ const lakes = loadLakes();
 // close to the same "genuinely nothing here" floor the detail tier already has. Re-run the same
 // check (see this constant's own git history for the sampling script) before tuning further.
 const RIVER_DETAIL_SCALERANK_CUTOFF = 9;
+
+// Rivers used to render as a flat-width stroked line. Requested instead: a tapered, filled shape —
+// full width where a river meets the sea, narrowing to a point at its headwater (see the reference
+// image this was built against — a hand-drawn Taiwan map where rivers read as solid wedges, not
+// lines). Natural Earth digitizes each river segment in flow direction — checked directly against
+// this exact dataset: the Rhine's, Danube's, and Nile's segments all run source-end-first,
+// mouth-end-last — so a segment's own point order doubles as the taper direction with no separate
+// flow-direction data needed.
+//
+// A single named river is usually many separate segments chained end-to-end rather than one long
+// line (the Nile alone is 17 in this dataset, the Volga 32), so naively tapering each segment from
+// its own 0% to 100% would reset the width at every segment boundary — confirmed 50.9% of all
+// 11,338 segments in this file connect unambiguously to another one, so that reset would happen at
+// roughly every other joint, reading as a visible "pulse" running down a river instead of one smooth
+// widening. buildRiverChains below walks chains of unambiguously-sequential segments (this one's end
+// point is the next one's start point, and neither point is shared with any third segment — an
+// actual confluence, where a real width step is expected anyway, breaks the chain there on purpose)
+// so each point's width comes from its position along the WHOLE chain's length, not just its own
+// segment's — while the ribbon polygon is still built and culled per original segment, so this only
+// changes which width number a point gets, not the per-piece culling granularity every other layer
+// in this file relies on.
+const RIVER_ENDPOINT_PRECISION = 5; // matches this file's own 1e5 topojson quantization
+function riverEndpointKey(point) {
+  return point[0].toFixed(RIVER_ENDPOINT_PRECISION) + ',' + point[1].toFixed(RIVER_ENDPOINT_PRECISION);
+}
+// cos(lat)-scaled equirectangular approximation — plenty accurate for a taper that's read as a
+// stylized visual cue, not a real hydrological measurement.
+function segmentLengths(line) {
+  const lengths = [0];
+  for (let i = 1; i < line.length; i++) {
+    const [lon0, lat0] = line[i - 1];
+    const [lon1, lat1] = line[i];
+    const latMid = (lat0 + lat1) / 2;
+    const dx = (lon1 - lon0) * Math.cos((latMid * Math.PI) / 180);
+    const dy = lat1 - lat0;
+    lengths.push(lengths[i - 1] + Math.hypot(dx, dy));
+  }
+  return lengths;
+}
+function buildRiverChains(lines) {
+  const startMap = new Map();
+  const endMap = new Map();
+  lines.forEach((line, i) => {
+    const startKey = riverEndpointKey(line[0]);
+    const endKey = riverEndpointKey(line[line.length - 1]);
+    if (!startMap.has(startKey)) startMap.set(startKey, []);
+    startMap.get(startKey).push(i);
+    if (!endMap.has(endKey)) endMap.set(endKey, []);
+    endMap.get(endKey).push(i);
+  });
+  const nextOf = new Map();
+  lines.forEach((line, i) => {
+    const endKey = riverEndpointKey(line[line.length - 1]);
+    const forward = startMap.get(endKey);
+    const backward = endMap.get(endKey);
+    if (forward && forward.length === 1 && backward && backward.length === 1 && forward[0] !== i) {
+      nextOf.set(i, forward[0]);
+    }
+  });
+  const prevOf = new Map();
+  for (const [a, b] of nextOf) prevOf.set(b, a);
+  const globalLengthAtPoint = new Array(lines.length);
+  const chainTotalLength = new Array(lines.length).fill(0);
+  const visited = new Set();
+  // Walk from every chain head (a segment with no unambiguous predecessor) so each segment is
+  // visited exactly once, in flow order, however long its chain runs.
+  for (let head = 0; head < lines.length; head++) {
+    if (prevOf.has(head) || visited.has(head)) continue;
+    let cumulative = 0;
+    let cursor = head;
+    const chainSegments = [];
+    while (cursor !== undefined && !visited.has(cursor)) {
+      visited.add(cursor);
+      chainSegments.push(cursor);
+      const lengths = segmentLengths(lines[cursor]).map((l) => l + cumulative);
+      globalLengthAtPoint[cursor] = lengths;
+      cumulative = lengths[lengths.length - 1];
+      cursor = nextOf.get(cursor);
+    }
+    for (const segIndex of chainSegments) chainTotalLength[segIndex] = cumulative;
+  }
+  return { globalLengthAtPoint, chainTotalLength };
+}
+function riverWidthsOf(lines, widthSourceDeg, widthMouthDeg) {
+  const { globalLengthAtPoint, chainTotalLength } = buildRiverChains(lines);
+  return lines.map((line, segIndex) => {
+    const lengths = globalLengthAtPoint[segIndex];
+    const total = chainTotalLength[segIndex];
+    return line.map((_, i) => {
+      const t = total > 0 ? lengths[i] / total : 0;
+      return widthSourceDeg + (widthMouthDeg - widthSourceDeg) * t;
+    });
+  });
+}
+// Offsets each centerline point perpendicular to its local tangent by half its precomputed width,
+// in a cos(lat)-scaled "flat" space so the offset looks visually even instead of skewed by
+// longitude compression away from the equator (undone again converting back to lon/lat degrees).
+// Left offsets forward + right offsets reversed forms one closed simple ring, same convention as
+// every other polygon ring in this file.
+//
+// The offset magnitude (half-width) is capped against the shorter of the point's own two adjacent
+// segment lengths: averaging the incoming/outgoing tangent direction (a cheap stand-in for a real
+// miter join) overshoots badly at a sharp bend, since the correct miter length grows without bound
+// as the turn angle shrinks — left uncapped, this measurably self-intersected ("bowtie") 14.2% of
+// major-tier ribbons in this dataset (0.53% of detail's, which run narrower and so hit this far less
+// often) at exactly the tight, kinked bends real river centerlines are full of. Capping to a fraction
+// of the local segment length keeps the offset from ever running past where the next/previous point
+// already turns the line, which is what actually causes the crossing.
+const RIVER_OFFSET_LOCAL_LENGTH_FRACTION = 0.45;
+function riverRibbonOf(line, widths) {
+  if (line.length < 2) return null;
+  const n = line.length;
+  const left = [];
+  const right = [];
+  for (let i = 0; i < n; i++) {
+    const [lon, lat] = line[i];
+    const cosLat = Math.cos((lat * Math.PI) / 180) || 1e-6;
+    const prev = line[Math.max(i - 1, 0)];
+    const next = line[Math.min(i + 1, n - 1)];
+    const toPrevLen = i > 0 ? Math.hypot((lon - prev[0]) * cosLat, lat - prev[1]) : Infinity;
+    const toNextLen = i < n - 1 ? Math.hypot((next[0] - lon) * cosLat, next[1] - lat) : Infinity;
+    const tx = (next[0] - prev[0]) * cosLat;
+    const ty = next[1] - prev[1];
+    const tlen = Math.hypot(tx, ty) || 1e-9;
+    const px = -ty / tlen;
+    const py = tx / tlen;
+    const maxHalf = Math.min(toPrevLen, toNextLen) * RIVER_OFFSET_LOCAL_LENGTH_FRACTION;
+    const half = Math.min(widths[i] / 2, maxHalf);
+    left.push([lon + (px * half) / cosLat, lat + py * half]);
+    right.push([lon - (px * half) / cosLat, lat - py * half]);
+  }
+  const ring = left.concat(right.reverse());
+  ring.push(ring[0]);
+  return [ring];
+}
+// Tuned so a major river's mouth reads as a solid few-pixel-wide shape right where RIVER_MIN_ZOOM
+// first reveals it (baseScale*zoom*(pi/180) pixels-per-degree — at a representative phone's
+// baseScale, ~64 px/deg at zoom 20 — puts the 0.045° mouth width at ~2.9px, the 0.012° source width
+// at ~0.8px); detail rivers get a narrower range of their own since they're meant to read as
+// smaller streams layered on top once RIVER_DETAIL_MIN_ZOOM reveals them. All four are degrees, so
+// (like every other layer here) they scale up naturally as zoom deepens further, the same as land or
+// lake geometry does.
+const RIVER_MAJOR_WIDTH_SOURCE_DEG = 0.012;
+const RIVER_MAJOR_WIDTH_MOUTH_DEG = 0.045;
+const RIVER_DETAIL_WIDTH_SOURCE_DEG = 0.006;
+const RIVER_DETAIL_WIDTH_MOUTH_DEG = 0.02;
+function ribbonsOf(lines, widthSourceDeg, widthMouthDeg) {
+  const widths = riverWidthsOf(lines, widthSourceDeg, widthMouthDeg);
+  const ribbons = [];
+  const bboxes = [];
+  lines.forEach((line, i) => {
+    const ribbon = riverRibbonOf(line, widths[i]);
+    if (!ribbon) return;
+    ribbons.push(ribbon);
+    bboxes.push(bboxOf(ribbon));
+  });
+  return { ribbons, bboxes };
+}
 function loadRivers() {
   const topology = JSON.parse(fs.readFileSync(path.join(root, 'scripts/data/rivers-10m.json'), 'utf8'));
   const object = topology.objects.rivers;
@@ -525,11 +683,13 @@ function loadRivers() {
     const bucket = f.properties.scalerank <= RIVER_DETAIL_SCALERANK_CUTOFF ? majorArcs : detailArcs;
     bucket.push(...lines);
   }
+  const major = ribbonsOf(majorArcs, RIVER_MAJOR_WIDTH_SOURCE_DEG, RIVER_MAJOR_WIDTH_MOUTH_DEG);
+  const detail = ribbonsOf(detailArcs, RIVER_DETAIL_WIDTH_SOURCE_DEG, RIVER_DETAIL_WIDTH_MOUTH_DEG);
   return {
-    majorArcs,
-    majorBboxes: majorArcs.map(bboxOf),
-    detailArcs,
-    detailBboxes: detailArcs.map(bboxOf),
+    majorRibbons: major.ribbons,
+    majorRibbonBboxes: major.bboxes,
+    detailRibbons: detail.ribbons,
+    detailRibbonBboxes: detail.bboxes,
   };
 }
 

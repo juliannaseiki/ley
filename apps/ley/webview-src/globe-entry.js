@@ -577,34 +577,34 @@ function renderInner() {
     ctx.stroke();
   }
 
-  // Rivers — only drawn past RIVER_MIN_ZOOM (deeper than lakes', see its definition above). Open
-  // lines, not a closed shape, so there's nothing to fill — landPath (smoothed the same as
-  // coastlines/lake shores, since a river's whole visual identity is its winding path) traces each
-  // one and only the stroke below actually draws it. Same water-family color as lake shores
-  // (THEME.river, deliberately the same value as THEME.lakeStroke) so a river reads as the same
-  // "water" idea as everything else blue on this map, not a third, competing accent color.
+  // Rivers — only drawn past RIVER_MIN_ZOOM (deeper than lakes', see its definition above). Each
+  // one is a filled, tapered ribbon polygon (build-globe-html.mjs's riverRibbonOf — full width at
+  // the mouth, narrowing to a point at the source) rather than a constant-width stroked line, so a
+  // river reads with actual visual volume instead of a wire outline (matching a real hand-drawn
+  // reference map, where rivers are solid tapered shapes, not lines). Same water-family color as
+  // lake shores (THEME.river, deliberately the same value as THEME.lakeStroke) so a river reads as
+  // the same "water" idea as everything else blue on this map, not a third, competing accent color.
   if (zoom >= RIVER_MIN_ZOOM) {
     ctx.beginPath();
-    for (let i = 0; i < RIVERS.majorArcs.length; i++) {
-      if (cullByBbox(RIVERS.majorBboxes[i], capRadiusDeg)) {
-        landPath({ type: 'LineString', coordinates: RIVERS.majorArcs[i] });
+    for (let i = 0; i < RIVERS.majorRibbons.length; i++) {
+      if (cullByBbox(RIVERS.majorRibbonBboxes[i], capRadiusDeg)) {
+        landPath({ type: 'Polygon', coordinates: RIVERS.majorRibbons[i] });
       }
     }
-    // Smaller streams (build-globe-html.mjs's RIVERS.detailArcs) layer on top once zoomed in past
-    // RIVER_DETAIL_MIN_ZOOM — added into the same path/stroke call as the major set above rather
+    // Smaller streams (build-globe-html.mjs's RIVERS.detailRibbons) layer on top once zoomed in
+    // past RIVER_DETAIL_MIN_ZOOM — added into the same path/fill call as the major set above rather
     // than a separate one, since they share the same style and there's nothing gained drawing them
-    // as a second stroke pass.
+    // as a second fill pass.
     if (zoom >= RIVER_DETAIL_MIN_ZOOM) {
-      for (let i = 0; i < RIVERS.detailArcs.length; i++) {
-        if (cullByBbox(RIVERS.detailBboxes[i], capRadiusDeg)) {
-          landPath({ type: 'LineString', coordinates: RIVERS.detailArcs[i] });
+      for (let i = 0; i < RIVERS.detailRibbons.length; i++) {
+        if (cullByBbox(RIVERS.detailRibbonBboxes[i], capRadiusDeg)) {
+          landPath({ type: 'Polygon', coordinates: RIVERS.detailRibbons[i] });
         }
       }
     }
     if (smoothLandThisFrame) smoothPathContext.flush();
-    ctx.lineWidth = 0.5;
-    ctx.strokeStyle = THEME.river;
-    ctx.stroke();
+    ctx.fillStyle = THEME.river;
+    ctx.fill();
   }
 
   // State/province borders for every country, drawn under country borders (so the country
