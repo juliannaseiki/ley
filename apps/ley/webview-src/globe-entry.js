@@ -520,12 +520,22 @@ function renderInner() {
       landPath({ type: 'Polygon', coordinates: countryTier.landPieces[i] });
     }
   }
+  if (smoothLandThisFrame) smoothPathContext.flush();
+  // Deliberately plain `path`, never `landPath` — a tile's own boundary is a mix of real coastline
+  // and the synthetic straight edges introduced by slicing a continent into tiles at build time,
+  // and rounding those synthetic edges' corners (this smoothing's whole job) visibly pulls each
+  // tile's fill inward from its true straight edge. Filled by itself that's invisible (one tile's
+  // fill just gets a hair smaller), but two ADJACENT tiles each pulling inward from the exact same
+  // shared edge opens a real gap between them — read as a "sparkle"/star where the ocean shows
+  // through, confirmed by reproducing this exact combined-fill sequence outside the app and finding
+  // it reliably vanishes the moment tile fill switches from smoothPath to plain path. Real coastline
+  // still gets its smoothing — just from the separate, real-edges-only outline stroke pass below,
+  // not from this fill.
   for (let i = 0; i < countryTier.landTileFillPieces.length; i++) {
     if (cullByBbox(countryTier.landTileFillBboxes[i], capRadiusDeg)) {
-      landPath({ type: 'Polygon', coordinates: countryTier.landTileFillPieces[i] });
+      path({ type: 'Polygon', coordinates: countryTier.landTileFillPieces[i] });
     }
   }
-  if (smoothLandThisFrame) smoothPathContext.flush();
   ctx.fillStyle = THEME.land;
   ctx.fill();
   // Coastline/continent outline — heavier than the country-border weight below, per the line-
@@ -558,10 +568,11 @@ function renderInner() {
   // on Earth — small enough on screen that a filled/outlined shape looked like stray specks rather
   // than real geography. Filled with the same ocean gradient as the sphere fill above (rather than
   // a separate flat land/white color) so a lake reads as one continuous idea of "water" instead of
-  // a similar-but-not-quite-identical gap in the land; outlined in THEME.lakeStroke (a light blue,
-  // a shade darker than the ocean fill) rather than landStroke's gray, so the shore reads as
-  // "water's edge" and not another gray map line. Same per-piece bbox-cull + cull-driven-smoothing
-  // approach as every other detail layer.
+  // a similar-but-not-quite-identical gap in the land. No stroke — rivers fill with this same
+  // oceanGradient and have no outline of their own, and a stroked lake next to an unstroked river
+  // read as an inconsistency between two things meant to be the same "water" idea; dropping it here
+  // (rather than adding a matching stroke to rivers) keeps both at the plainer, one-color-fill
+  // treatment. Same per-piece bbox-cull + cull-driven-smoothing approach as every other detail layer.
   if (zoom >= LAKE_MIN_ZOOM) {
     ctx.beginPath();
     for (let i = 0; i < LAKES.pieces.length; i++) {
@@ -572,39 +583,36 @@ function renderInner() {
     if (smoothLandThisFrame) smoothPathContext.flush();
     ctx.fillStyle = oceanGradient;
     ctx.fill();
-    ctx.lineWidth = 0.4;
-    ctx.strokeStyle = THEME.lakeStroke;
-    ctx.stroke();
   }
 
-  // Rivers — only drawn past RIVER_MIN_ZOOM (deeper than lakes', see its definition above). Open
-  // lines, not a closed shape, so there's nothing to fill — landPath (smoothed the same as
-  // coastlines/lake shores, since a river's whole visual identity is its winding path) traces each
-  // one and only the stroke below actually draws it. Same water-family color as lake shores
-  // (THEME.river, deliberately the same value as THEME.lakeStroke) so a river reads as the same
-  // "water" idea as everything else blue on this map, not a third, competing accent color.
+  // Rivers — only drawn past RIVER_MIN_ZOOM (deeper than lakes', see its definition above). Each
+  // one is a filled, tapered ribbon polygon (build-globe-html.mjs's riverRibbonOf — full width at
+  // the mouth, narrowing to a point at the source) rather than a constant-width stroked line, so a
+  // river reads with actual visual volume instead of a wire outline (matching a real hand-drawn
+  // reference map, where rivers are solid tapered shapes, not lines). Filled with the same
+  // oceanGradient a lake's body is, no stroke, so a river reads as the same plain "water" idea as a
+  // lake rather than a competing, differently-treated shape.
   if (zoom >= RIVER_MIN_ZOOM) {
     ctx.beginPath();
-    for (let i = 0; i < RIVERS.majorArcs.length; i++) {
-      if (cullByBbox(RIVERS.majorBboxes[i], capRadiusDeg)) {
-        landPath({ type: 'LineString', coordinates: RIVERS.majorArcs[i] });
+    for (let i = 0; i < RIVERS.majorRibbons.length; i++) {
+      if (cullByBbox(RIVERS.majorRibbonBboxes[i], capRadiusDeg)) {
+        landPath({ type: 'Polygon', coordinates: RIVERS.majorRibbons[i] });
       }
     }
-    // Smaller streams (build-globe-html.mjs's RIVERS.detailArcs) layer on top once zoomed in past
-    // RIVER_DETAIL_MIN_ZOOM — added into the same path/stroke call as the major set above rather
+    // Smaller streams (build-globe-html.mjs's RIVERS.detailRibbons) layer on top once zoomed in
+    // past RIVER_DETAIL_MIN_ZOOM — added into the same path/fill call as the major set above rather
     // than a separate one, since they share the same style and there's nothing gained drawing them
-    // as a second stroke pass.
+    // as a second fill pass.
     if (zoom >= RIVER_DETAIL_MIN_ZOOM) {
-      for (let i = 0; i < RIVERS.detailArcs.length; i++) {
-        if (cullByBbox(RIVERS.detailBboxes[i], capRadiusDeg)) {
-          landPath({ type: 'LineString', coordinates: RIVERS.detailArcs[i] });
+      for (let i = 0; i < RIVERS.detailRibbons.length; i++) {
+        if (cullByBbox(RIVERS.detailRibbonBboxes[i], capRadiusDeg)) {
+          landPath({ type: 'Polygon', coordinates: RIVERS.detailRibbons[i] });
         }
       }
     }
     if (smoothLandThisFrame) smoothPathContext.flush();
-    ctx.lineWidth = 0.5;
-    ctx.strokeStyle = THEME.river;
-    ctx.stroke();
+    ctx.fillStyle = oceanGradient;
+    ctx.fill();
   }
 
   // State/province borders for every country, drawn under country borders (so the country
